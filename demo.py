@@ -3,7 +3,7 @@ import sys
 import os 
 import rbdl 
 import warnings
-import time 
+import tqdm
 import os 
 dir_path = os.path.dirname(os.path.realpath(__file__)) 
 import numpy as np
@@ -213,8 +213,10 @@ class InferencePipeline():
         basis_vec_w = torch.FloatTensor(np.array([[1, 0, 0, ], [0, 1, 0, ], [0, 0, 1, ]])).view(1, 3, 3)
         basis_vec_w = basis_vec_w.expand(n_b, -1, -1)
         
-        for i in range(temporal_window, len(p_2ds_rr)):
-            print(i) 
+        # print(p_2ds_rr.shape)
+        # while True:
+        #     pass
+        for i in tqdm.tqdm(list(range(temporal_window, len(p_2ds_rr)))):
             frame_canonical_2Ds = canoical_2Ds[i - temporal_window:i, ].reshape(n_b, temporal_window, -1)
             frame_rr_2Ds = p_2ds_rr[i - temporal_window:i, ].reshape(n_b, temporal_window, -1)
             floor_noramls = torch.transpose(torch.bmm(self.Rs, torch.transpose(basis_vec_w, 1, 2)), 1, 2)[:, 1].view(n_b, 3)
@@ -272,6 +274,9 @@ class InferencePipeline():
                     GRFInput = torch.cat((tau_gcc[:, :6], torch.flatten(J, 1), floor_noramls, pred_labels, pre_lr_th_cons), 1)#.cuda()
                     lr_th_cons = self.GRFNet(GRFInput)
                     gen_conF = cut.get_contact_wrench_cpu(self.model, q0, self.rbdl_dic, lr_th_cons.cpu(), pred_labels)
+                    # print(f"gen_conF.shape: {gen_conF.shape}")
+                    # while True:
+                    #     pass
                      
                     ### Forward Dynamics and Pose Update ###
                     tau_special = tau_gcc - gen_conF
@@ -319,7 +324,7 @@ if __name__ == "__main__":
     parser.add_argument('--floor_position_path', default="./sample_data/sample_floor_position.npy")
     parser.add_argument('--cam_params_known', type=int, default=0)
     parser.add_argument('--cam_params_path', default="./sample_data/sample_cam_params.npy")
-    parser.add_argument('--save_base_path/', default="./results/")
+    parser.add_argument('--save_base_path', default="./results/")
     parser.add_argument('--urdf_path', default="./URDF/manual.urdf")
     parser.add_argument('--temporal_window', type=int, default=10)
     args = parser.parse_args()
