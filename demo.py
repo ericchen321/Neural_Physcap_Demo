@@ -20,6 +20,7 @@ from pipeline_util import  PyProjection,PyPerspectivieDivision
 from scipy.spatial.transform import Rotation as Rot
 from torch.autograd import Variable
 import argparse  
+from datetime import datetime
 
 class InferencePipeline():
     def __init__(self,urdf_path,net_path,data_path,save_base_path,w,h,K,RT,neural_PD=1,grad_descent=0, n_iter=6,con_thresh=0.01,limit=50,speed_limit=35):
@@ -318,8 +319,11 @@ if __name__ == "__main__":
     parser.add_argument('--floor_position_path', default="./sample_data/sample_floor_position.npy")
     parser.add_argument('--cam_params_known', type=int, default=0)
     parser.add_argument('--cam_params_path', default="./sample_data/sample_cam_params.npy")
-
+    parser.add_argument('--save_base_path/', default="./results/")
+    parser.add_argument('--urdf_path', default="./URDF/manual.urdf")
+    parser.add_argument('--temporal_window', type=int, default=10)
     args = parser.parse_args()
+
     """
     todo:
     start from frame 1 (not 10)
@@ -332,12 +336,13 @@ if __name__ == "__main__":
     n_b = 1 
     id_simulator = p.connect(p.DIRECT)
     p.configureDebugVisualizer(flag=p.COV_ENABLE_Y_AXIS_UP, enable=1) 
-    save_base_path = "./results/" 
-    urdf_path = "./URDF/manual.urdf"
+    time_curr = datetime.now().strftime('%Y-%m-%d-%H-%M-%S')
+    save_base_path = f"{args.save_base_path}/t={time_curr}/"
+    urdf_path = args.urdf_path
     net_path=args.net_path  
     w=args.img_width
     h=args.img_height
-    temporal_window = 10
+    temporal_window = args.temporal_window
  
     if args.floor_known: 
         RT = np.load(args.floor_position_path ) 
