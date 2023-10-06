@@ -1,4 +1,5 @@
 import torch
+import numpy as np
 import math
 
 class angle_util():
@@ -179,6 +180,51 @@ class angle_util():
         return torch.stack((torch.zeros(len(qdot)) ,qdot[:,0],qdot[:,1],qdot[:,2]), dim=1)
     def quat_conj(self,q):
         return torch.FloatTensor([q[0],-q[1],-q[2],-q[3]])
+    
+    def differentiate_qpos(
+        self, q_plus, q_minus, delta_t):
+        r"""
+        Differentiate qpos consisting of root translation, root rotation, and joint angles.
+
+        Parameters:
+            q_plus: qpos at step t+1 (n_batch, dof+1)
+            q_minus: qpost at step t (n_batch, dof+1)
+            delta_t: timestep size
+
+        Return:
+            Generalized velocity (n_batch, dof)
+        """
+        assert torch.is_tensor(q_plus) == torch.is_tensor(q_minus)
+        if not torch.is_tensor(q_plus):
+            np_flag = True
+            q_plus = torch.FloatTensor(q_plus)
+            q_minus = torch.FloatTensor(q_minus)
+        else:
+            np_flag = False
+
+        # root translation
+        dq_dt_rtrans = (q_plus[:, :3] - q_minus[:, :3]) / delta_t
+        
+        # root rotation
+        # my method: use the equation 2 * dq/dt qmul conj(q)
+        q_plus_norm = self.normalize_vector(q_plus[:, 3:7])
+        q_minus_norm = self.normalize_vector(q_minus[:, 3:7])
+        dqdt_rrot = (q_plus_norm - q_minus_norm) / delta_t
+        conj_q = self.q_conj(q_plus_norm)
+        qmul_res = self.qmul(dqdt_rrot, conj_q)
+        angvel = 2 * qmul_res[:, 1:]
+
+        # joint angles
+        dqdt_joints = (q_plus[:, 7:] - q_minus[:, 7:]) / (delta_t)
+
+        # concatenate
+        qvel = torch.cat([dq_dt_rtrans, angvel, dqdt_joints], dim=-1)
+
+        if np_flag:
+            qvel = qvel.cpu().detach().numpy()
+        else:
+            pass
+        return qvel
 
     def compute_rotation_matrix_from_quaternion(self,quaternion):
 

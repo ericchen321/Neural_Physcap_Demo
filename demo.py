@@ -21,9 +21,24 @@ from scipy.spatial.transform import Rotation as Rot
 from torch.autograd import Variable
 import argparse  
 from datetime import datetime
+import h5py
+
 
 class InferencePipeline():
-    def __init__(self,urdf_path,net_path,data_path,save_base_path,w,h,K,RT,neural_PD=1,grad_descent=0, n_iter=6,con_thresh=0.01,limit=50,speed_limit=35):
+    def __init__(
+        self,
+        urdf_path,
+        net_path,
+        data_path,
+        save_base_path,
+        w,h,K,RT,
+        neural_PD=1,
+        grad_descent=0,
+        n_iter=6,
+        con_thresh=0.01,
+        limit=50,
+        speed_limit=35,
+        seq_name=""):
 
         ### configuration ###
         self.w=w
@@ -36,6 +51,7 @@ class InferencePipeline():
         self.grad_descent = grad_descent
         self.save_base_path=save_base_path 
         self.n_iter_GD=90
+        self.seq_name = seq_name
 
         ### joint mapping ###
         self.openpose_dic2 = { "base": 7, "left_hip": 11, "left_knee": 12, "left_ankle": 13, "left_toe": 19, "right_hip": 8, "right_knee": 9, "right_ankle": 10, "right_toe": 22, "neck": 0, "head": 14, "left_shoulder": 4, "left_elbow": 5, "left_wrist": 6, "right_shoulder": 1, "right_elbow": 2,  "right_wrist": 3 }
@@ -203,8 +219,15 @@ class InferencePipeline():
 
     def inference(self):
 
-        ### Initializatoin ###
+        ### Initialization ###
         all_q , all_p_3ds, all_tau, all_iter_q =  [],[],[],[]
+        qpos_gt = []
+        qvel_gt = []
+        bfrc_gr_opt = []
+        qfrc_gr_opt = []
+        M_rigid = []
+        tau_opt = []
+        gravcol = []
       
         p_2ds_rr = self.p_2ds_rr#.cuda()
         canoical_2Ds = self.canoical_2Ds#.cuda()
@@ -232,6 +255,10 @@ class InferencePipeline():
 
             ### compute Target Pose ###
             art_tar, quat_tar, trans_tar, q_tar = self.get_target_pose(input_can,input_rr,target_2d,tar_trans0,first_frame_flag)
+            # print(f"quat_tar.shape: {quat_tar.shape}")
+            # print(f"q_tar.shape: {q_tar.shape}")
+            # while True:
+            #     pass
             tar_trans0=trans_tar.clone()
             with torch.no_grad(): 
                 ### compute contact labels ###
@@ -240,6 +267,9 @@ class InferencePipeline():
                 if i == temporal_window:
                     q0 = q_tar.clone().cpu()
                     pre_lr_th_cons = torch.zeros(n_b, 4 * 3)
+                    # print(f"qdot_size : {self.model.qdot_size}")
+                    # while True:
+                    #     pass
                     qdot0 = torch.zeros(n_b, self.model.qdot_size)
 
                 quat_tar = quat_tar.cpu()
@@ -251,6 +281,7 @@ class InferencePipeline():
                 for iter in range(self.n_iter):
                     ### Compute dynamic quantitites and pose errors ###
                     M = ut.get_mass_mat_cpu(self.model, q0.detach().clone().cpu().numpy())
+                    # print(f"cond num of M: {np.linalg.cond(M)}")
                     M_inv = torch.inverse(M).clone()
                     M_inv = ut.clean_massMat(M_inv)
                     J = CU.get_contact_jacobis6D_cpu(self.model, q0.numpy(), [self.rbdl_dic['left_ankle'], self.rbdl_dic['right_ankle']])  # ankles
@@ -261,6 +292,10 @@ class InferencePipeline():
 
                     ### Force Vector Computation ###
                     if self.neural_PD:
+                        # print(f"qdot0's norm: {torch.norm(qdot0)}")
+                        # print(f"qdot0.shape: {qdot0.shape}")
+                        # while True:
+                        #     pass
                         dynInput = torch.cat((q_tar, q0, qdot0, torch.flatten(M_inv, 1), current_errors,), 1)
                         neural_gain, neural_offset = self.DyNet(dynInput )#.cuda()
                         tau = CU.get_neural_development_cpu(errors_trans, errors_ori, errors_art, qdot0, neural_gain.cpu(), neural_offset.cpu(), self.limit,art_only=1, small_z=1)
@@ -274,6 +309,7 @@ class InferencePipeline():
                     GRFInput = torch.cat((tau_gcc[:, :6], torch.flatten(J, 1), floor_noramls, pred_labels, pre_lr_th_cons), 1)#.cuda()
                     lr_th_cons = self.GRFNet(GRFInput)
                     gen_conF = cut.get_contact_wrench_cpu(self.model, q0, self.rbdl_dic, lr_th_cons.cpu(), pred_labels)
+                    # print(f"lr_th_cons.shape: {lr_th_cons.shape}")
                     # print(f"gen_conF.shape: {gen_conF.shape}")
                     # while True:
                     #     pass
@@ -288,25 +324,73 @@ class InferencePipeline():
                     if iter == 0: all_tau.append(torch.flatten(tau_special).numpy())
                     all_iter_q.append(torch.flatten(q0).numpy())
                 
-                ### store the predictions ###
-             
+                ### store the predictions ###             
                 p_3D_p = self.PyFK( [self.model_addresses["0"]], self.target_joint_ids,delta_t, torch.FloatTensor([0]) , q0) 
                 all_q.append(torch.flatten(q0).detach().numpy()) 
                 all_p_3ds.append(p_3D_p[0].cpu().numpy()) 
 
+                # store kin + dyn data
+                qpos_gt.append(q_tar.detach().numpy())
+                if len(qpos_gt) >= 2:
+                    qvel_gt.append(
+                        AU.differentiate_qpos(
+                            qpos_gt[-1], qpos_gt[-2], delta_t))
+                bfrc_gr_opt.append(lr_th_cons.detach().numpy())
+                qfrc_gr_opt.append(gen_conF.detach().numpy())
+                M_rigid.append(M.detach().numpy())
+                tau_opt.append(tau.detach().numpy())
+                gravcol.append(gcc.detach().numpy())
+         
+        ########### save the predictions ###############
         print('saving predictions ...')
         all_q = np.array(all_q)  
         all_p_3ds=np.array(all_p_3ds) 
         all_iter_q=np.array(all_iter_q)
-         
-         
-        ########### save the predictions ###############
         if not os.path.exists(self.save_base_path +  "/"): 
             os.makedirs(self.save_base_path + "/")
         print(self.save_base_path +  "/q_iter_dyn.npy")
         np.save(self.save_base_path +  "/q_iter_dyn.npy", all_iter_q)
         np.save(self.save_base_path +  "/q_dyn.npy", all_q)   
         np.save(self.save_base_path +  "/p_3D_dyn.npy", all_p_3ds)  
+        
+        # save kin + dyn data
+        # np.save(self.save_base_path +  "/qpos_gt.npy", qpos_gt)
+        # np.save(self.save_base_path +  "/qvel_gt.npy", qvel_gt)
+        # np.save(self.save_base_path +  "/bfrc_gr_opt.npy", bfrc_gr_opt)
+        # np.save(self.save_base_path +  "/qfrc_gr_opt.npy", qfrc_gr_opt)
+        print('saving kin + dyn data...')
+        qpos_gt = np.array(qpos_gt[1:])[:, 0]
+        qvel_gt = np.array(qvel_gt)[:, 0]
+        bfrc_gr_opt = np.array(bfrc_gr_opt[1:])[:, 0]
+        qfrc_gr_opt = np.array(qfrc_gr_opt[1:])[:, 0]
+        M_rigid = np.array(M_rigid[1:])[:, 0]
+        tau_opt = np.array(tau_opt[1:])[:, 0]
+        gravcol = np.array(gravcol[1:])[:, 0]
+        print(f"qpos_gt.shape: {qpos_gt.shape}")
+        print(f"qvel_gt.shape: {qvel_gt.shape}")
+        print(f"bfrc_gr_opt.shape: {bfrc_gr_opt.shape}")
+        print(f"qfrc_gr_opt.shape: {qfrc_gr_opt.shape}")
+        print(f"M_rigid.shape: {M_rigid.shape}")
+        print(f"tau_opt.shape: {tau_opt.shape}")
+        print(f"gravcol.shape: {gravcol.shape}")
+        h5path = f"{self.save_base_path}/data+seq_name={self.seq_name}.h5"
+        with h5py.File(h5path, "w") as h5file:
+            # save data
+            h5file.create_dataset(
+                "qpos_gt", data = qpos_gt)
+            h5file.create_dataset(
+                "qvel_gt", data = qvel_gt)
+            h5file.create_dataset(
+                "bfrc_gr_opt", data = bfrc_gr_opt)
+            h5file.create_dataset(
+                "qfrc_gr_opt", data = qfrc_gr_opt)
+            h5file.create_dataset(
+                "M_rigid", data = M_rigid)
+            h5file.create_dataset(
+                "tau_opt", data = tau_opt)
+            h5file.create_dataset(
+                "gravcol", data = gravcol)
+        print(f"Kin + dyn data saved to {h5path}")
         print('Done.')
         return 0
  
@@ -342,7 +426,11 @@ if __name__ == "__main__":
     id_simulator = p.connect(p.DIRECT)
     p.configureDebugVisualizer(flag=p.COV_ENABLE_Y_AXIS_UP, enable=1) 
     time_curr = datetime.now().strftime('%Y-%m-%d-%H-%M-%S')
-    save_base_path = f"{args.save_base_path}/t={time_curr}/"
+    input_basename = os.path.splitext(
+        os.path.basename(args.input_path))[0]
+    save_base_path = "".join(
+        [f"{args.save_base_path}/",
+         f"{input_basename}+t={time_curr}"])
     urdf_path = args.urdf_path
     net_path=args.net_path  
     w=args.img_width
@@ -361,15 +449,17 @@ if __name__ == "__main__":
         K = np.array([1000, 0, w/2, 0, 0, 1000, h/2, 0, 0, 0, 1, 0, 0, 0, 0, 1]).reshape(4, 4) 
         grad_descent=1
     
-    IPL = InferencePipeline(urdf_path,
-                            net_path, 
-                            args.input_path,
-                            save_base_path,
-                            w,h,K,RT,
-                            neural_PD=1,
-                            grad_descent=grad_descent, 
-                            n_iter=args.n_iter,
-                            con_thresh=args.con_thresh,
-                            limit=args.tau_limit,
-                            speed_limit=args.speed_limit)
+    IPL = InferencePipeline(
+        urdf_path,
+        net_path, 
+        args.input_path,
+        save_base_path,
+        w,h,K,RT,
+        neural_PD=1,
+        grad_descent=grad_descent, 
+        n_iter=args.n_iter,
+        con_thresh=args.con_thresh,
+        limit=args.tau_limit,
+        speed_limit=args.speed_limit,
+        seq_name=input_basename)
     IPL.inference()

@@ -226,6 +226,13 @@ class CoreUtils():
         l = torch.sqrt(quat.pow(2).sum(1)).view(n_b, 1)
         quat = quat / l
         q = torch.cat((q_trans, quat[:, 1:], q_art, quat[:, 0].view(-1, 1)), 1)
+        # print(f"q_trans.shape: {q_trans.shape}")
+        # print(f"quat[:, 1:].shape: {quat[:, 1:].shape}")
+        # print(f"q_art.shape: {q_art.shape}")
+        # print(f"quat[:, 0].view(-1, 1).shape: {quat[:, 0].view(-1, 1).shape}")
+        # print(f"q.shape: {q.shape}")
+        # while True:
+        #     pass
         return quat, q, qdot, _
 
     def pose_update_quat_debug(self,qdot0,q0,quat0,delta_t,qddot,th_zero = 0):
