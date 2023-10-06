@@ -1,3 +1,5 @@
 results/
 trained_models/
 __pycache__/
+tb/
+plots/
