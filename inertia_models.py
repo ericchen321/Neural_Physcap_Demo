@@ -5,6 +5,9 @@ import torch
 import torch.nn as nn
 from typing import Dict
 import spdlayers
+import rbdl
+from Utils.misc import get_mass_mat
+from Utils.angles import angle_util
 
 
 def construct_symm_matrix(
@@ -645,19 +648,36 @@ class SPDNetQVel(SPDNetBase):
 
 class CRBA(nn.Module):
     r"""
-    Simply compute the average of the provided rigid inertia matrices,
-    across steps.
+    Invoke RBDL to solve mass matrices using the Composite Rigid Body
+    Algorithm (CRBA).
     """
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        urdf_path: str,
+        dof: int = 46) -> None:
         super().__init__()
+        self.dof = dof
+        self.model = rbdl.loadModel(urdf_path.encode(), floating_base=True)
+        self.angle_util = angle_util()
 
     def forward(self, x: Dict[str, torch.Tensor]):
         r"""
         Parameters:
-            x: Dict including M_rigid of shape (num_sims, num_steps, dof, dof)
+            x: Dict containing joint positions (num_sims, num_steps, dof+1)
         """
-        # compute average
-        M_avg = torch.mean(x["M_rigid"], dim=1)
+        num_sims, num_steps, _ = x["qpos"].shape
+        qpos_init = x["qpos"][:, 0].view(num_sims, self.dof+1)
+        M_rigid_init = torch.zeros(
+            (num_sims, self.dof, self.dof),
+            dtype=torch.float32,
+            device=x["qpos"].device)
+        for sim_idx in range(num_sims):
+            m = get_mass_mat(
+                self.model,
+                qpos_init[[sim_idx]].clone().cpu().detach().numpy(),
+                device = x["qpos"].device).view(1, self.dof, self.dof)
+            M_rigid_init[sim_idx] = m[0]
+
         out = {
-            "inertia": M_avg}
+            "inertia": M_rigid_init}
         return out

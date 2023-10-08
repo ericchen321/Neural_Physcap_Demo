@@ -184,14 +184,13 @@ def get_q_quat_from_axis_rbdl(q):
     new_q = torch.cat((q[:, :3], quat[:,1:].view(-1, 3), q[:, 6:],quat[:,0].view(-1,1)), 1)
     return  new_q
 
-def get_mass_mat(model, q): 
+def get_mass_mat(model, q, device="cuda"): 
     n_b, _ = q.shape
     M_np = np.zeros((n_b, model.qdot_size, model.qdot_size))
     [rbdl.CompositeRigidBodyAlgorithm(model, q[i].astype(float), M_np[i]) for i in range(n_b)]
+    return torch.FloatTensor(M_np).to(device)
 
-    return torch.FloatTensor(M_np)##.cuda()
 def get_mass_mat_cpu(model, q):
- 
     n_b, _ = q.shape
     M_np = np.zeros((n_b, model.qdot_size, model.qdot_size))
     [rbdl.CompositeRigidBodyAlgorithm(model, q[i].astype(float), M_np[i]) for i in range(n_b)]
