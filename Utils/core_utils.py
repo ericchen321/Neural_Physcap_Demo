@@ -231,6 +231,14 @@ class CoreUtils():
         # print(f"q_art.shape: {q_art.shape}")
         # print(f"quat[:, 0].view(-1, 1).shape: {quat[:, 0].view(-1, 1).shape}")
         # print(f"q.shape: {q.shape}")
+        # check if my differentiation of q is correct
+        # strategy: differentiate q and compare with qdot
+        # qvel_mine = AU.differentiate_qpos(
+        #     q, q0, delta_t)
+        # print(f"qvel_mine: {qvel_mine}")
+        # qdot_mine = (q - q0) / delta_t
+        # print(f"qdot_mine: {qdot_mine}")
+        # print(f"qdot: {qdot}")
         # while True:
         #     pass
         return quat, q, qdot, _

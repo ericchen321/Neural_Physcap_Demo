@@ -207,15 +207,15 @@ class angle_util():
         
         # root rotation
         # my method: use the equation 2 * dq/dt qmul conj(q)
-        q_plus_norm = self.normalize_vector(q_plus[:, 3:7])
-        q_minus_norm = self.normalize_vector(q_minus[:, 3:7])
-        dqdt_rrot = (q_plus_norm - q_minus_norm) / delta_t
-        conj_q = self.q_conj(q_plus_norm)
+        quat_plus = self.normalize_vector(q_plus[:, [-1, 3, 4, 5]])
+        quat_minus = self.normalize_vector(q_minus[:, [-1, 3, 4, 5]])
+        dqdt_rrot = (quat_plus - quat_minus) / delta_t
+        conj_q = self.q_conj(quat_plus)
         qmul_res = self.qmul(dqdt_rrot, conj_q)
         angvel = 2 * qmul_res[:, 1:]
 
         # joint angles
-        dqdt_joints = (q_plus[:, 7:] - q_minus[:, 7:]) / (delta_t)
+        dqdt_joints = (q_plus[:, 6:-1] - q_minus[:, 6:-1]) / (delta_t)
 
         # concatenate
         qvel = torch.cat([dq_dt_rtrans, angvel, dqdt_joints], dim=-1)

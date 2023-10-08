@@ -334,7 +334,7 @@ class InferencePipeline():
                 if len(qpos_gt) >= 2:
                     qvel_gt.append(
                         AU.differentiate_qpos(
-                            qpos_gt[-1], qpos_gt[-2], delta_t))
+                            qpos_gt[-1], qpos_gt[-2], self.n_iter*delta_t))
                 bfrc_gr_opt.append(lr_th_cons.detach().numpy())
                 qfrc_gr_opt.append(gen_conF.detach().numpy())
                 M_rigid.append(M.detach().numpy())
