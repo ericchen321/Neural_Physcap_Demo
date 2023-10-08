@@ -1,18 +1,27 @@
 # general
 config_name: "config_a04"
-h5_path: "results/sample_dance+t=2023-10-05-21-39-09/data+seq_name=sample_dance.h5"
+h5_path: "results/sample_dance+t=2023-10-07-15-29-33/data+seq_name=sample_dance.h5"
 seq_length: 5
+
+# forces:
+force_specs:
+  tau_opt: 1.0
 
 # estimation
 estimation_specs:
   num_train_steps: 2000
-  learning_rate: 5.0e-4
+  optimizer:
+    name: "Adam"
+    params:
+      learning_rate: 5.0e-4
+      amsgrad: False
   batch_size: 32
   steps_til_val: 100
   models:
-    crba:
+    CRBA:
       arch: "nn"
       network: "CRBA"
+      urdf_path: "URDF/manual.urdf"
     nn+SymmNet:
       network: "SymmNetQVel"
       mlp:

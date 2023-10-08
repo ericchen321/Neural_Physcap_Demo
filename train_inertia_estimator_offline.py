@@ -9,8 +9,11 @@ from dataset import (
     PerMotionDataName,
     PerMotionDataset)
 import torch
-from torch.utils.data import random_split
-from torch.utils.data import DataLoader
+import numpy as np
+from torch.utils.data import (
+    random_split,
+    DataLoader,
+    Subset)
 from inertia_models import (
     UnconNetBase,
     SymmNetBase,
@@ -23,6 +26,7 @@ from inertia_losses import LossName, ImpulseLoss
 from tqdm import tqdm
 from Utils.inertia_utils import move_dict_to_device
 from torch.utils.tensorboard import SummaryWriter
+from Visualizations.inertia_visualization import InertiaMatrixVisualizer
 
 
 if __name__ == "__main__":
@@ -43,15 +47,26 @@ if __name__ == "__main__":
     motion_name = os.path.splitext(os.path.basename(h5_path))[0].split("seq_name=")[1]
     time_curr = datetime.now().strftime('%Y-%m-%d-%H-%M-%S')
     seq_length = config["seq_length"]
+    force_specs = config["force_specs"]
+    assert len(force_specs) > 0
     estimation_specs = config["estimation_specs"]
     num_train_steps = estimation_specs["num_train_steps"]
-    learning_rate = estimation_specs["learning_rate"]
+    optimizer_specs = estimation_specs["optimizer"]
     batch_size = estimation_specs["batch_size"]
     steps_til_val = estimation_specs["steps_til_val"]
     visual_specs = config["visual_specs"]
     plot_dir_base = visual_specs["plot_dir"]
+    plot_dir_exp = os.path.join(
+        plot_dir_base,
+        f"{config_name}+{motion_name}+t={time_curr}/")
     tb_dir_base = visual_specs["tb_dir"]
+    tb_dir_exp = os.path.join(
+        tb_dir_base,
+        f"{config_name}+{motion_name}+t={time_curr}/")
     dof = 46
+    n_iters = 6
+    dt_dcycle = 0.011
+    dt = n_iters * dt_dcycle
     device = "cuda"
     loss_name = LossName.IMPULSE_LOSS
     
@@ -68,7 +83,17 @@ if __name__ == "__main__":
     print(f"Val size: {val_size}")
     print(f"Test size: {test_size}")
 
+    # randomly pick three test sequences for visual
+    test_seq_idxs = torch.randperm(len(dataset_test))[:3]
+    dataloader_test = DataLoader(
+        Subset(dataset_test, test_seq_idxs),
+        batch_size = len(test_seq_idxs),
+        shuffle = False,
+        num_workers = 0)
+    iterator_test = iter(dataloader_test)
+    
     # for each model specified, train + val + test
+    test_results = {}
     for model_name, model_specs in estimation_specs["models"].items():
         # define inertia model
         # extract common NN specs
@@ -142,7 +167,8 @@ if __name__ == "__main__":
                 activation = activation,
                 spd_layer_opts = model_specs["spd_layer"]).to(device)
         elif network == "CRBA":
-            model = CRBA()
+            model = CRBA(
+                model_specs["urdf_path"])
         else:
             raise ValueError("Invalid network name")
         
@@ -150,10 +176,28 @@ if __name__ == "__main__":
         if loss_name == LossName.IMPULSE_LOSS:
             loss_cls = ImpulseLoss(dof=dof, reduction="mean")
 
+        # define optimizer
+        if network != "CRBA":
+            if optimizer_specs["name"] == "Adam":
+                learning_rate = optimizer_specs["params"]["learning_rate"]
+                amsgrad = optimizer_specs["params"]["amsgrad"]
+                optimizer = torch.optim.Adam(
+                    model.parameters(),
+                    lr=learning_rate,
+                    amsgrad=amsgrad)
+            elif optimizer_specs["name"] == "SGD":
+                learning_rate = optimizer_specs["params"]["learning_rate"]
+                momentum = optimizer_specs["params"]["momentum"]
+                optimizer = torch.optim.SGD(
+                    model.parameters(),
+                    lr=learning_rate,
+                    momentum=momentum)
+            else:
+                raise ValueError("Invalid optimizer name")
+
         # define tb writer
         tb_dir_per_model = os.path.join(
-            tb_dir_base,
-            f"{config_name}+{motion_name}+t={time_curr}/",
+            tb_dir_exp,
             model_name)
         writer = SummaryWriter(log_dir = tb_dir_per_model)
 
@@ -168,11 +212,9 @@ if __name__ == "__main__":
             shuffle = True,
             num_workers = 0)
         iterator_train = iter(dataloader_train)
-        if network != "CRBA":
-            optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
         model.train()
         for step in tqdm(range(num_train_steps)):
-            # load batch
+            # load train batch
             try:
                 data = next(iterator_train)
             except StopIteration:
@@ -180,28 +222,31 @@ if __name__ == "__main__":
                 data = next(iterator_train)
             data_device = move_dict_to_device(
                 data, device)
-            model_input = {
+            model_input_train = {
                 "qpos": data_device[PerMotionDataName.QPOS_GT],
-                "qvel": data_device[PerMotionDataName.QVEL_GT],
-                "M_rigid": data_device[PerMotionDataName.M_RIGID]}
+                "qvel": data_device[PerMotionDataName.QVEL_GT]}
             
             # forward pass
             if network != "CRBA":
                 optimizer.zero_grad()
-            model_output = model(model_input)
+            model_output_train = model(model_input_train)
 
             # compute loss and backprop
-            # qfrc_sum = \
-            #     data_device[PerMotionDataName.QFRC_GR_OPT] + \
-            #     data_device[PerMotionDataName.TAU_OPT] + \
-            #     data_device[PerMotionDataName.GRAVCOL]
-            qfrc_sum = data_device[PerMotionDataName.TAU_OPT]
+            qfrc_net = 0
+            for force_name, force_scale in force_specs.items():
+                qfrc_net += force_scale * data_device[force_name]
+            
             loss_dict = loss_cls.loss(
-                model_output["inertia"],
-                model_input["qvel"],
-                qfrc_sum,
-                torch.FloatTensor([0.011]).to(device))
+                model_output_train["inertia"],
+                model_input_train["qvel"],
+                qfrc_net,
+                torch.FloatTensor([dt]).to(device))
             loss = loss_dict["loss"]
+            # print(f"inertia[0] has norm: {model_output_train['inertia'][0].norm()}")
+            # print(f"impl_pred[0] has norm: {loss_dict['impl_pred'][0].norm()}")
+            # print(f"impl_gt[0] has norm: {loss_dict['impl_gt'][0].norm()}")
+            # while True:
+            #     pass
             if network != "CRBA":
                 loss.backward()
                 optimizer.step()
@@ -209,3 +254,45 @@ if __name__ == "__main__":
 
             # validate
             # TODO:
+
+        # test
+        print(f"Testing {model_name}...")
+        # load test batch
+        try:
+            data = next(iterator_test)
+        except StopIteration:
+            iterator_test = iter(dataloader_test)
+            data = next(iterator_test)
+        data_device = move_dict_to_device(
+            data, device)
+        model_input_test = {
+            "qpos": data_device[PerMotionDataName.QPOS_GT],
+            "qvel": data_device[PerMotionDataName.QVEL_GT]}
+        # forward pass
+        model.eval()
+        model_output_test = model(model_input_test)
+        test_results[model_name] = model_output_test
+
+    # visualize results
+    print(f"Visualizing...")
+    M_visualizer = InertiaMatrixVisualizer(
+        "inertia")
+    Ms = np.zeros(
+        (len(test_results), len(test_seq_idxs), seq_length, dof, dof))
+    times = dt * np.arange(0, seq_length) * 1000
+    for i, (model_name, model_output_test) in enumerate(test_results.items()):
+        Ms[i] = torch.unsqueeze(
+            model_output_test["inertia"], dim=1).cpu().detach().numpy()
+    for i, test_seq_idx in enumerate(test_seq_idxs):
+        M_visualizer.plot_inertia_as_heatmaps(
+            list(test_results.keys()),
+            times.astype(np.int32),
+            Ms[:, i],
+            plot_dir=f"{plot_dir_exp}/seq={test_seq_idx:02d}/",
+            plot_first_step_only = True)
+        M_visualizer.plot_eigenvals_of_inertia(
+            list(test_results.keys()),
+            times.astype(np.int32),
+            Ms[:, i],
+            plot_dir=f"{plot_dir_exp}/seq={test_seq_idx:02d}/",
+            plot_first_step_only = True)
