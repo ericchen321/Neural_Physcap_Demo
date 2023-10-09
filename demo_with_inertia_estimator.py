@@ -1,3 +1,6 @@
+# Author: Guanxiong and the original authors
+
+
 import torch
 import sys
 import os 
@@ -8,6 +11,7 @@ import os
 dir_path = os.path.dirname(os.path.realpath(__file__)) 
 import numpy as np
 from networks import TargetPoseNetArt,TargetPoseNetOri,ContactEstimationNetwork,TransCan3Dkeys,DynamicNetwork,GRFNet
+from inertia_models import define_inertia_estimator
 from Utils.angles import angle_util 
 import Utils.misc as ut
 import Utils.phys as ppf
@@ -22,6 +26,7 @@ from torch.autograd import Variable
 import argparse  
 from datetime import datetime
 import h5py
+import yaml
 
 
 class InferencePipeline():
@@ -31,10 +36,14 @@ class InferencePipeline():
         net_path,
         data_path,
         save_base_path,
+        inertia_model_name,
+        inertia_model_specs,
+        train_experiment_name,
         w,h,K,RT,
         neural_PD=1,
         grad_descent=0,
         n_iter=6,
+        temporal_window=10,
         con_thresh=0.01,
         limit=50,
         speed_limit=35,
@@ -45,6 +54,7 @@ class InferencePipeline():
         self.h=h
         self.neural_PD=neural_PD 
         self.n_iter = n_iter
+        self.temporal_window = temporal_window
         self.con_thresh = con_thresh
         self.limit = limit
         self.speed_limit = speed_limit
@@ -95,6 +105,28 @@ class InferencePipeline():
         self.DyNet.eval()
         self.GRFNet.eval()
 
+        # define inertia estimator
+        self.inertia_model_name = inertia_model_name
+        self.inertia_estimator = define_inertia_estimator(
+            inertia_model_specs,
+            1,
+            46,
+            "cpu")
+        # load pretrained weights if the estimator is not CRBA
+        if inertia_model_specs['network'] != "CRBA":
+            model_weights_path = os.path.join(
+                "data_logging/",
+                "train_inertia_estimator_offline/",
+                f"{train_experiment_name}/",
+                f"{self.inertia_model_name}/",
+                f"{inertia_model_specs['network']}.pt")
+            self.inertia_estimator.load_state_dict(
+                torch.load(
+                    model_weights_path, map_location=torch.device('cpu')),
+                strict = True)
+        print(f"Loaded {self.inertia_model_name} model for inertia estimation")
+
+
         ### setup custom pytorch functions including the Physics model 
         self.PyFK = ppf.PyForwardKinematicsQuaternion().apply 
         self.PyFK_rr = ppf.PyForwardKinematicsQuaternion().apply 
@@ -144,14 +176,7 @@ class InferencePipeline():
             model_address = self.model_addresses[str(int(sid))]
             model_address.gravity = -9.8 * floor_noramls[batch_id]
             rbdl.InverseDynamics(model_address, q[batch_id], qdot[batch_id], np.zeros(self.model.qdot_size).astype(float),  gcc[batch_id]) 
-        return torch.FloatTensor(gcc)
-
-    def get_mass_mat(self,model, q):
-        n_b, _ = q.shape
-        M_np = np.zeros((n_b, model.qdot_size, model.qdot_size))
-        [rbdl.CompositeRigidBodyAlgorithm(model, q[i].astype(float), M_np[i]) for i in range(n_b)]
-        return M_np
- 
+        return torch.FloatTensor(gcc) 
 
     def contact_label_estimation(self,input_rr):
         pred_labels = self.ConNet(input_rr)
@@ -240,15 +265,19 @@ class InferencePipeline():
         # print(p_2ds_rr.shape)
         # while True:
         #     pass
-        for i in tqdm.tqdm(list(range(temporal_window, len(p_2ds_rr)))):
-            frame_canonical_2Ds = canoical_2Ds[i - temporal_window:i, ].reshape(n_b, temporal_window, -1)
-            frame_rr_2Ds = p_2ds_rr[i - temporal_window:i, ].reshape(n_b, temporal_window, -1)
-            floor_noramls = torch.transpose(torch.bmm(self.Rs, torch.transpose(basis_vec_w, 1, 2)), 1, 2)[:, 1].view(n_b, 3)
-            input_rr = frame_rr_2Ds.reshape(n_b, temporal_window, -1)
-            input_can = frame_canonical_2Ds.reshape(n_b, temporal_window, -1)
+        # for i in tqdm.tqdm(list(range(self.temporal_window, len(p_2ds_rr)))):
+        for i in tqdm.tqdm(list(range(self.temporal_window, 100))):
+            frame_canonical_2Ds = canoical_2Ds[
+                i - self.temporal_window:i, ].reshape(n_b, self.temporal_window, -1)
+            frame_rr_2Ds = p_2ds_rr[
+                i - self.temporal_window:i, ].reshape(n_b, self.temporal_window, -1)
+            floor_noramls = torch.transpose(
+                torch.bmm(self.Rs, torch.transpose(basis_vec_w, 1, 2)), 1, 2)[:, 1].view(n_b, 3)
+            input_rr = frame_rr_2Ds.reshape(n_b, self.temporal_window, -1)
+            input_can = frame_canonical_2Ds.reshape(n_b, self.temporal_window, -1)
             target_2d = p_2ds[i].reshape(n_b,-1)
 
-            if i==temporal_window:
+            if i==self.temporal_window:
                 tar_trans0 = None 
                 first_frame_flag=1
             else:
@@ -265,7 +294,7 @@ class InferencePipeline():
                 ### compute contact labels ###
                 pred_labels,pred_labels_prob = self.contact_label_estimation(input_rr)
 
-                if i == temporal_window:
+                if i == self.temporal_window:
                     q0 = q_tar.clone().cpu()
                     pre_lr_th_cons = torch.zeros(n_b, 4 * 3)
                     # print(f"qdot_size : {self.model.qdot_size}")
@@ -281,7 +310,15 @@ class InferencePipeline():
                 ### Dynamic Cycle ###
                 for iter in range(self.n_iter):
                     ### Compute dynamic quantitites and pose errors ###
-                    M = ut.get_mass_mat_cpu(self.model, q0.detach().clone().cpu().numpy())
+                    # M = ut.get_mass_mat_cpu(
+                    #     self.model, q0.detach().clone().cpu().numpy())
+                    # NOTE: here we use our inertia estimator instead of get_mass_mat_cpu()
+                    model_input = {
+                        "qpos": q0.clone().unsqueeze(1),
+                        "qvel": qdot0.clone().unsqueeze(1)}
+                    model_output = self.inertia_estimator(model_input)
+                    M = model_output["inertia"].clone().to("cpu")
+
                     # print(f"cond num of M: {np.linalg.cond(M)}")
                     M_inv = torch.inverse(M).clone()
                     M_inv = ut.clean_massMat(M_inv)
@@ -456,10 +493,12 @@ if __name__ == "__main__":
     parser.add_argument('--save_base_path', default="./data_logging/")
     parser.add_argument('--urdf_path', default="./URDF/manual.urdf")
     parser.add_argument('--temporal_window', type=int, default=10)
+    parser.add_argument('--inertia_est_config', required=True)
+    parser.add_argument('--train_experiment_name', required=True)
     args = parser.parse_args()
 
     """
-    todo:
+    TODO:
     start from frame 1 (not 10)
     """
     AU = angle_util()
@@ -475,13 +514,12 @@ if __name__ == "__main__":
         os.path.basename(args.input_path))[0]
     save_base_path = "".join(
         [f"{args.save_base_path}/",
-         "demo/",
+         "demo_with_inertia_estimator/",
          f"{input_basename}+t={time_curr}"])
     urdf_path = args.urdf_path
     net_path=args.net_path  
     w=args.img_width
     h=args.img_height
-    temporal_window = args.temporal_window
  
     if args.floor_known: 
         RT = np.load(args.floor_position_path ) 
@@ -494,18 +532,35 @@ if __name__ == "__main__":
     else: 
         K = np.array([1000, 0, w/2, 0, 0, 1000, h/2, 0, 0, 0, 1, 0, 0, 0, 0, 1]).reshape(4, 4) 
         grad_descent=1
-    
-    IPL = InferencePipeline(
-        urdf_path,
-        net_path, 
-        args.input_path,
-        save_base_path,
-        w,h,K,RT,
-        neural_PD=1,
-        grad_descent=grad_descent, 
-        n_iter=args.n_iter,
-        con_thresh=args.con_thresh,
-        limit=args.tau_limit,
-        speed_limit=args.speed_limit,
-        seq_name=input_basename)
-    IPL.inference()
+
+    # extract inertia estimation configs
+    with open(args.inertia_est_config, "r") as stream:
+        try:
+            inertia_est_config = yaml.safe_load(stream)
+        except yaml.YAMLError as exc:
+            print(exc)
+    estimation_specs = inertia_est_config["estimation_specs"]
+
+    for model_name, model_specs in estimation_specs["models"].items():
+        # define save path per model
+        save_path_per_model = "".join([save_base_path, "/", model_name])
+
+        # evaluate
+        IPL = InferencePipeline(
+            urdf_path,
+            net_path,
+            args.input_path,
+            save_path_per_model,
+            model_name,
+            model_specs,
+            args.train_experiment_name,
+            w,h,K,RT,
+            neural_PD=1,
+            grad_descent=grad_descent, 
+            n_iter=args.n_iter,
+            temporal_window=args.temporal_window,
+            con_thresh=args.con_thresh,
+            limit=args.tau_limit,
+            speed_limit=args.speed_limit,
+            seq_name=input_basename)
+        IPL.inference()

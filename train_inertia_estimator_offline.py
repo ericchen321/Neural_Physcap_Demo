@@ -14,14 +14,7 @@ from torch.utils.data import (
     random_split,
     DataLoader,
     Subset)
-from inertia_models import (
-    UnconNetBase,
-    SymmNetBase,
-    SPDNetBase,
-    UnconNetQVel,
-    SymmNetQVel,
-    SPDNetQVel,
-    CRBA)
+from inertia_models import define_inertia_estimator
 from inertia_losses import LossName, ImpulseLoss
 from tqdm import tqdm
 from Utils.inertia_utils import move_dict_to_device
@@ -58,10 +51,18 @@ if __name__ == "__main__":
     plot_dir_base = visual_specs["plot_dir"]
     plot_dir_exp = os.path.join(
         plot_dir_base,
+        "train_inertia_estimator_offline/",
         f"{config_name}+{motion_name}+t={time_curr}/")
     tb_dir_base = visual_specs["tb_dir"]
     tb_dir_exp = os.path.join(
         tb_dir_base,
+        "train_inertia_estimator_offline/",
+        f"{config_name}+{motion_name}+t={time_curr}/")
+    data_save_specs = config["data_save_specs"]
+    data_save_dir_base = data_save_specs["data_save_dir"]
+    data_save_dir_exp = os.path.join(
+        data_save_dir_base,
+        "train_inertia_estimator_offline/",
         f"{config_name}+{motion_name}+t={time_curr}/")
     dof = 46
     n_iters = 6
@@ -91,86 +92,27 @@ if __name__ == "__main__":
         shuffle = False,
         num_workers = 0)
     iterator_test = iter(dataloader_test)
+
+    # set up validation dataloader
+    dataloader_val = DataLoader(
+        dataset_val,
+        batch_size = len(dataset_val),
+        shuffle = True,
+        num_workers = 0)
+    iterator_val = iter(dataloader_val)
     
     # for each model specified, train + val + test
     test_results = {}
     for model_name, model_specs in estimation_specs["models"].items():
-        # define inertia model
-        # extract common NN specs
+        # get network name
         network = model_specs["network"]
-        if "activation" in model_specs:
-            activation = model_specs["activation"]
-        # decode MLP widths from depth
-        if "mlp" in model_specs and "depth" in model_specs["mlp"]:
-            mlp_depth = model_specs["mlp"]["depth"]
-            if mlp_depth == 2:
-                mlp_widths = [512]
-            elif mlp_depth == 3:
-                mlp_widths = [1024, 512]
-            elif mlp_depth == 8:
-                mlp_widths = [8192, 4096, 2048, 1024, 1024, 512, 512]
-            elif mlp_depth == 12:
-                mlp_widths = [4096] + \
-                    [2048]*2 + \
-                    [1024]*2 + \
-                    [1024]*2 + \
-                    [512]*2 + \
-                    [512]*2
-            elif mlp_depth == 16:
-                mlp_widths = [16384] + \
-                    [8192]*2 + \
-                    [4096]*2 + \
-                    [2048]*2 + \
-                    [1024]*2 + \
-                    [1024]*2 + \
-                    [512]*2 + \
-                    [512]*2
-            else:
-                raise ValueError("Unsupported MLP depth")
-        # instantiate NN
-        if network == "UnconNetBase":
-            model = UnconNetBase(
-                mlp_widths = mlp_widths,
-                seq_length = seq_length,
-                dof = dof,
-                activation = activation).to(device)
-        elif network == "SymmNetBase":
-            model = SymmNetBase(
-                mlp_widths = mlp_widths,
-                seq_length = seq_length,
-                dof = dof,
-                activation = activation).to(device)
-        elif network == "SPDNetBase":
-            model = SPDNetBase(
-                mlp_widths = mlp_widths,
-                seq_length = seq_length,
-                dof = dof,
-                activation = activation,
-                spd_layer_opts = model_specs["spd_layer"]).to(device)
-        elif network == "UnconNetQVel":
-            model = UnconNetQVel(
-                mlp_widths = mlp_widths,
-                seq_length = seq_length,
-                dof = dof,
-                activation = activation).to(device)
-        elif network == "SymmNetQVel":
-            model = SymmNetQVel(
-                mlp_widths = mlp_widths,
-                seq_length = seq_length,
-                dof = dof,
-                activation = activation).to(device)
-        elif network == "SPDNetQVel":
-            model = SPDNetQVel(
-                mlp_widths = mlp_widths,
-                seq_length = seq_length,
-                dof = dof,
-                activation = activation,
-                spd_layer_opts = model_specs["spd_layer"]).to(device)
-        elif network == "CRBA":
-            model = CRBA(
-                model_specs["urdf_path"])
-        else:
-            raise ValueError("Invalid network name")
+
+        # define inertia model
+        model = define_inertia_estimator(
+            model_specs,
+            seq_length,
+            dof,
+            device)
         
         # define the loss class
         if loss_name == LossName.IMPULSE_LOSS:
@@ -212,29 +154,29 @@ if __name__ == "__main__":
             shuffle = True,
             num_workers = 0)
         iterator_train = iter(dataloader_train)
-        model.train()
-        for step in tqdm(range(num_train_steps)):
+        for step_idx in tqdm(range(num_train_steps)):
             # load train batch
             try:
-                data = next(iterator_train)
+                data_train = next(iterator_train)
             except StopIteration:
                 iterator_train = iter(dataloader_train)
-                data = next(iterator_train)
-            data_device = move_dict_to_device(
-                data, device)
+                data_train = next(iterator_train)
+            data_train_device = move_dict_to_device(
+                data_train, device)
             model_input_train = {
-                "qpos": data_device[PerMotionDataName.QPOS_GT],
-                "qvel": data_device[PerMotionDataName.QVEL_GT]}
+                "qpos": data_train_device[PerMotionDataName.QPOS_GT],
+                "qvel": data_train_device[PerMotionDataName.QVEL_GT]}
             
             # forward pass
             if network != "CRBA":
                 optimizer.zero_grad()
+            model.train()
             model_output_train = model(model_input_train)
 
             # compute loss and backprop
             qfrc_net = 0
             for force_name, force_scale in force_specs.items():
-                qfrc_net += force_scale * data_device[force_name]
+                qfrc_net += force_scale * data_train_device[force_name]
             
             loss_dict = loss_cls.loss(
                 model_output_train["inertia"],
@@ -250,28 +192,70 @@ if __name__ == "__main__":
             if network != "CRBA":
                 loss.backward()
                 optimizer.step()
-            writer.add_scalar("train/loss", loss, step)
+            writer.add_scalar("train/loss", loss, step_idx)
 
             # validate
-            # TODO:
+            # NOTE: for the time being, use impulse loss as val metric
+            if (step_idx+1) % steps_til_val == 0 or step_idx == 0:
+                # load val batch
+                try:
+                    data_val = next(iterator_val)
+                except StopIteration:
+                    iterator_val = iter(dataloader_val)
+                    data_val = next(iterator_val)
+                data_val_device = move_dict_to_device(
+                    data_val, device)
+                model_input_val = {
+                    "qpos": data_val_device[PerMotionDataName.QPOS_GT],
+                    "qvel": data_val_device[PerMotionDataName.QVEL_GT]}
+                
+                # forward pass
+                model.eval()
+                with torch.no_grad():
+                    model_output_val = model(model_input_val)
+                
+                # compute loss as metric
+                qfrc_net = 0
+                for force_name, force_scale in force_specs.items():
+                    qfrc_net += force_scale * data_val_device[force_name]
+                loss_dict = loss_cls.loss(
+                    model_output_val["inertia"],
+                    model_input_val["qvel"],
+                    qfrc_net,
+                    torch.FloatTensor([dt]).to(device))
+                loss_val = loss_dict["loss"]
+                writer.add_scalar("val/loss", loss, step_idx)
 
         # test
         print(f"Testing {model_name}...")
         # load test batch
         try:
-            data = next(iterator_test)
+            data_test = next(iterator_test)
         except StopIteration:
             iterator_test = iter(dataloader_test)
-            data = next(iterator_test)
-        data_device = move_dict_to_device(
-            data, device)
+            data_test = next(iterator_test)
+        data_test_device = move_dict_to_device(
+            data_test, device)
         model_input_test = {
-            "qpos": data_device[PerMotionDataName.QPOS_GT],
-            "qvel": data_device[PerMotionDataName.QVEL_GT]}
+            "qpos": data_test_device[PerMotionDataName.QPOS_GT],
+            "qvel": data_test_device[PerMotionDataName.QVEL_GT]}
         # forward pass
         model.eval()
-        model_output_test = model(model_input_test)
-        test_results[model_name] = model_output_test
+        with torch.no_grad():
+            model_output_test = model(model_input_test)
+            test_results[model_name] = model_output_test
+
+        # save data
+        data_save_dir_per_model = os.path.join(
+            data_save_dir_exp,
+            model_name)
+        if network != "CRBA":
+            os.makedirs(data_save_dir_per_model, exist_ok=True)
+            nn_weights_path = f"{data_save_dir_per_model}/{network}.pt"
+            torch.save(
+                model.state_dict(),
+                nn_weights_path)
+            print(f"Saved weights of {model_name} to {nn_weights_path}")
 
     # visualize results
     print(f"Visualizing...")

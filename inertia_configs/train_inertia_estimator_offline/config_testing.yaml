@@ -1,7 +1,11 @@
 # general
 config_name: "config_testing"
-h5_path: "results/sample_dance+t=2023-10-07-15-29-33/data+seq_name=sample_dance.h5"
+h5_path: "data_logging/demo/sample_dance+t=2023-10-07-15-29-33/data+seq_name=sample_dance.h5"
 seq_length: 2
+
+# forces:
+force_specs:
+  tau_opt: 1.0
 
 # estimation
 estimation_specs:
@@ -12,7 +16,7 @@ estimation_specs:
       learning_rate: 2.5e-4
       amsgrad: True
   batch_size: 64
-  steps_til_val: 100
+  steps_til_val: 10
   models:
     CRBA:
       arch: "nn"
@@ -47,3 +51,7 @@ estimation_specs:
 visual_specs:
   plot_dir: "plots/"
   tb_dir: "tb/"
+
+# data saving
+data_save_specs:
+  data_save_dir: "data_logging/"

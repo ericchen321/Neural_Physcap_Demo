@@ -67,6 +67,92 @@ def construct_symm_matrix(
     return mat_symm
 
 
+def define_inertia_estimator(
+    model_specs: Dict,
+    seq_length: int,
+    dof: int = 46,
+    device: str = "cuda") -> nn.Module:
+    
+    # extract common NN specs
+    network = model_specs["network"]
+    if "activation" in model_specs:
+        activation = model_specs["activation"]
+    
+    # decode MLP widths from depth
+    if "mlp" in model_specs and "depth" in model_specs["mlp"]:
+        mlp_depth = model_specs["mlp"]["depth"]
+        if mlp_depth == 2:
+            mlp_widths = [512]
+        elif mlp_depth == 3:
+            mlp_widths = [1024, 512]
+        elif mlp_depth == 8:
+            mlp_widths = [8192, 4096, 2048, 1024, 1024, 512, 512]
+        elif mlp_depth == 12:
+            mlp_widths = [4096] + \
+                [2048]*2 + \
+                [1024]*2 + \
+                [1024]*2 + \
+                [512]*2 + \
+                [512]*2
+        elif mlp_depth == 16:
+            mlp_widths = [16384] + \
+                [8192]*2 + \
+                [4096]*2 + \
+                [2048]*2 + \
+                [1024]*2 + \
+                [1024]*2 + \
+                [512]*2 + \
+                [512]*2
+        else:
+            raise ValueError("Unsupported MLP depth")
+    
+    # instantiate NN
+    if network == "UnconNetBase":
+        model = UnconNetBase(
+            mlp_widths = mlp_widths,
+            seq_length = seq_length,
+            dof = dof,
+            activation = activation).to(device)
+    elif network == "SymmNetBase":
+        model = SymmNetBase(
+            mlp_widths = mlp_widths,
+            seq_length = seq_length,
+            dof = dof,
+            activation = activation).to(device)
+    elif network == "SPDNetBase":
+        model = SPDNetBase(
+            mlp_widths = mlp_widths,
+            seq_length = seq_length,
+            dof = dof,
+            activation = activation,
+            spd_layer_opts = model_specs["spd_layer"]).to(device)
+    elif network == "UnconNetQVel":
+        model = UnconNetQVel(
+            mlp_widths = mlp_widths,
+            seq_length = seq_length,
+            dof = dof,
+            activation = activation).to(device)
+    elif network == "SymmNetQVel":
+        model = SymmNetQVel(
+            mlp_widths = mlp_widths,
+            seq_length = seq_length,
+            dof = dof,
+            activation = activation).to(device)
+    elif network == "SPDNetQVel":
+        model = SPDNetQVel(
+            mlp_widths = mlp_widths,
+            seq_length = seq_length,
+            dof = dof,
+            activation = activation,
+            spd_layer_opts = model_specs["spd_layer"]).to(device)
+    elif network == "CRBA":
+        model = CRBA(
+            model_specs["urdf_path"])
+    else:
+        raise ValueError("Invalid network name")
+    return model
+
+
 class ArchB(nn.Module):
     def __init__(
         self,
@@ -488,8 +574,7 @@ class UnconNetQVel(UnconNetBase):
 
         Parameters:
             x: dict containing 1) joint positions (num_sims, num_steps, dof+1);
-            2) body masses (num_sims, ); 3) body heights (num_sims, ); 4) joint
-            velocities (num_sims, num_steps, dof)
+            2) joint velocities (num_sims, num_steps, dof)
         """
         # extract initial pose
         num_sims = x["qpos"].shape[0]

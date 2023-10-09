@@ -1,6 +1,6 @@
 # general
 config_name: "config_a01"
-h5_path: "results/sample_dance+t=2023-10-07-15-29-33/data+seq_name=sample_dance.h5"
+h5_path: "data_logging/demo/sample_dance+t=2023-10-07-15-29-33/data+seq_name=sample_dance.h5"
 seq_length: 5
 
 # forces:
