@@ -265,8 +265,7 @@ class InferencePipeline():
         # print(p_2ds_rr.shape)
         # while True:
         #     pass
-        # for i in tqdm.tqdm(list(range(self.temporal_window, len(p_2ds_rr)))):
-        for i in tqdm.tqdm(list(range(self.temporal_window, 100))):
+        for i in tqdm.tqdm(list(range(self.temporal_window, len(p_2ds_rr)))):
             frame_canonical_2Ds = canoical_2Ds[
                 i - self.temporal_window:i, ].reshape(n_b, self.temporal_window, -1)
             frame_rr_2Ds = p_2ds_rr[
