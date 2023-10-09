@@ -223,6 +223,7 @@ class InferencePipeline():
         all_q , all_p_3ds, all_tau, all_iter_q =  [],[],[],[]
         qpos_gt = []
         qvel_gt = []
+        qvel_opt = []
         bfrc_gr_opt = []
         qfrc_gr_opt = []
         M_rigid = []
@@ -318,6 +319,14 @@ class InferencePipeline():
                     tau_special = tau_gcc - gen_conF
                     qddot = self.PyFD(tau_special + gen_conF - gcc, M_inv)
                     quat, q, qdot, _ = CU.pose_update_quat_cpu(qdot0.detach(), q0.detach(), quat0.detach(), delta_t, qddot, self.speed_limit, th_zero=1)
+                    
+                    # WTS per-iteration impulse loss is large
+                    Mdv_iter = torch.bmm(
+                        torch.FloatTensor(M),
+                        torch.FloatTensor(qdot - qdot0).view(n_b, 46, 1))
+                    impl_opt_iter = delta_t * torch.FloatTensor(tau_special + gen_conF - gcc)
+                    loss_iter = torch.norm(Mdv_iter - impl_opt_iter)
+                    print(f"impulse loss per iter: {loss_iter}")
 
                     qdot0 = qdot.detach().clone()
                     q0 = AU.angle_normalize_batch_cpu(q.detach().clone())
@@ -335,11 +344,47 @@ class InferencePipeline():
                     qvel_gt.append(
                         AU.differentiate_qpos(
                             qpos_gt[-1], qpos_gt[-2], self.n_iter*delta_t))
+                qvel_opt.append(qdot.detach().numpy())
                 bfrc_gr_opt.append(lr_th_cons.detach().numpy())
                 qfrc_gr_opt.append(gen_conF.detach().numpy())
                 M_rigid.append(M.detach().numpy())
                 tau_opt.append(tau.detach().numpy())
                 gravcol.append(gcc.detach().numpy())
+
+                # WTS impulse loss is large
+                # q_tar_norm = AU.angle_normalize_batch_cpu(q_tar.detach().clone())
+                # print(f"||norm(q_tar) - q||: {torch.norm(q_tar_norm - q0)}"
+                # if len(qvel_gt) >= 2:
+                #     Mdv = torch.bmm(
+                #         torch.FloatTensor(M),
+                #         torch.FloatTensor(qvel_gt[-1] - qvel_gt[-2]).view(n_b, 46, 1))
+                #     impl_opt = self.n_iter * delta_t * torch.FloatTensor(tau_opt[-1])
+                #     loss = torch.norm(Mdv - impl_opt)
+                #     print(f"impulse loss using GT qvel: {loss}")
+                # if len(qvel_opt) >= 2:
+                #     Mdv = torch.bmm(
+                #         torch.FloatTensor(M),
+                #         torch.FloatTensor(qvel_opt[-1] - qvel_opt[-2]).view(n_b, 46, 1))
+                #     impl_opt = self.n_iter * delta_t * torch.FloatTensor(tau_opt[-1])
+                #     loss = torch.norm(Mdv - impl_opt)
+                #     print(f"impulse loss using opt qvel: {loss}")
+
+                # WTS velocity loss is large
+                # if len(qvel_gt) >= 2:
+                #     qvel_diff_gt = torch.FloatTensor(qvel_gt[-1] - qvel_gt[-2]).view(n_b, 46, 1)
+                #     Minv_impl = self.n_iter * delta_t * torch.bmm(
+                #         torch.FloatTensor(M_inv), torch.FloatTensor(tau_opt[-1]).view(n_b, 46, 1))
+                #     loss = torch.norm(qvel_diff_gt - Minv_impl)
+                #     print(f"velocity loss using GT qvel: {loss}")
+                # if len(qvel_opt) >= 2:
+                #     qvel_diff_opt = torch.FloatTensor(qvel_opt[-1] - qvel_opt[-2]).view(n_b, 46, 1)
+                #     Minv_impl = self.n_iter * delta_t * torch.bmm(
+                #         torch.FloatTensor(M_inv), torch.FloatTensor(tau_opt[-1]).view(n_b, 46, 1))
+                #     loss = torch.norm(qvel_diff_opt - Minv_impl)
+                #     print(f"velocity loss using opt qvel: {loss}")
+
+                # check joint pose error
+                # print(f"||q_tar - q||: {torch.norm(q_tar - q0, 1)}")
          
         ########### save the predictions ###############
         print('saving predictions ...')
