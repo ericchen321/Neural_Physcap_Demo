@@ -242,7 +242,9 @@ class InferencePipeline():
         q_tar[:, :3] = trans_tar.clone()
         return art_tar,quat_tar,trans_tar,q_tar
 
-    def inference(self):
+    def inference(
+        self,
+        eval_til_step: int = -1):
 
         ### Initialization ###
         all_q , all_p_3ds, all_tau, all_iter_q =  [],[],[],[]
@@ -265,7 +267,9 @@ class InferencePipeline():
         # print(p_2ds_rr.shape)
         # while True:
         #     pass
-        for i in tqdm.tqdm(list(range(self.temporal_window, len(p_2ds_rr)))):
+        if eval_til_step == -1:
+            eval_til_step = len(p_2ds_rr)
+        for i in tqdm.tqdm(list(range(self.temporal_window, eval_til_step))):
             frame_canonical_2Ds = canoical_2Ds[
                 i - self.temporal_window:i, ].reshape(n_b, self.temporal_window, -1)
             frame_rr_2Ds = p_2ds_rr[
@@ -494,6 +498,7 @@ if __name__ == "__main__":
     parser.add_argument('--temporal_window', type=int, default=10)
     parser.add_argument('--inertia_est_config', required=True)
     parser.add_argument('--train_experiment_name', required=True)
+    parser.add_argument('--eval_til_step', type=int, default=-1)
     args = parser.parse_args()
 
     """
@@ -562,4 +567,4 @@ if __name__ == "__main__":
             limit=args.tau_limit,
             speed_limit=args.speed_limit,
             seq_name=input_basename)
-        IPL.inference()
+        IPL.inference(eval_til_step=args.eval_til_step)
