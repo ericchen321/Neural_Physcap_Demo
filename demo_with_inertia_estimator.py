@@ -12,6 +12,7 @@ dir_path = os.path.dirname(os.path.realpath(__file__))
 import numpy as np
 from networks import TargetPoseNetArt,TargetPoseNetOri,ContactEstimationNetwork,TransCan3Dkeys,DynamicNetwork,GRFNet
 from inertia_models import define_inertia_estimator
+from inertia_losses import LossName
 from Utils.angles import angle_util 
 import Utils.misc as ut
 import Utils.phys as ppf
@@ -38,6 +39,7 @@ class InferencePipeline():
         save_base_path,
         inertia_model_name,
         inertia_model_specs,
+        predict_M_inv,
         train_experiment_name,
         w,h,K,RT,
         neural_PD=1,
@@ -107,19 +109,23 @@ class InferencePipeline():
 
         # define inertia estimator
         self.inertia_model_name = inertia_model_name
+        self.inertia_estimator_specs = inertia_model_specs
+        self.predict_M_inv = predict_M_inv
+        if self.predict_M_inv:
+            print("Predicting M_inv")
         self.inertia_estimator = define_inertia_estimator(
-            inertia_model_specs,
+            self.inertia_estimator_specs,
             1,
             46,
             "cpu")
         # load pretrained weights if the estimator is not CRBA
-        if inertia_model_specs['network'] != "CRBA":
+        if self.inertia_estimator_specs['network'] != "CRBA":
             model_weights_path = os.path.join(
                 "data_logging/",
                 "train_inertia_estimator_offline/",
                 f"{train_experiment_name}/",
                 f"{self.inertia_model_name}/",
-                f"{inertia_model_specs['network']}.pt")
+                f"{self.inertia_estimator_specs['network']}.pt")
             self.inertia_estimator.load_state_dict(
                 torch.load(
                     model_weights_path, map_location=torch.device('cpu')),
@@ -320,11 +326,22 @@ class InferencePipeline():
                         "qpos": q0.clone().unsqueeze(1),
                         "qvel": qdot0.clone().unsqueeze(1)}
                     model_output = self.inertia_estimator(model_input)
-                    M = model_output["inertia"].clone().to("cpu")
-
-                    # print(f"cond num of M: {np.linalg.cond(M)}")
-                    M_inv = torch.inverse(M).clone()
-                    M_inv = ut.clean_massMat(M_inv)
+                    
+                    # extract M or M_inv
+                    if self.predict_M_inv:
+                        if self.inertia_estimator_specs["network"] == "CRBA":
+                            M = model_output["inertia"].clone().to("cpu")
+                            M_inv = torch.inverse(M).clone()
+                            M_inv = ut.clean_massMat(M_inv)
+                        else:
+                            M_inv = model_output["inertia"].clone().to("cpu")
+                            M = torch.inverse(M_inv).clone()
+                    else:
+                        M = model_output["inertia"].clone().to("cpu")
+                        M_inv = torch.inverse(M).clone()
+                        if self.inertia_estimator_specs["network"] == "CRBA":
+                            M_inv = ut.clean_massMat(M_inv)
+                    
                     J = CU.get_contact_jacobis6D_cpu(self.model, q0.numpy(), [self.rbdl_dic['left_ankle'], self.rbdl_dic['right_ankle']])  # ankles
 
                     quat0 = torch.cat((q0[:, -1].view(-1, 1), q0[:, 3:6]), 1).detach().clone()
@@ -544,6 +561,7 @@ if __name__ == "__main__":
         except yaml.YAMLError as exc:
             print(exc)
     estimation_specs = inertia_est_config["estimation_specs"]
+    predict_M_inv = estimation_specs["loss"]["name"] == LossName.VELOCITY_LOSS
 
     for model_name, model_specs in estimation_specs["models"].items():
         # define save path per model
@@ -557,6 +575,7 @@ if __name__ == "__main__":
             save_path_per_model,
             model_name,
             model_specs,
+            predict_M_inv,
             args.train_experiment_name,
             w,h,K,RT,
             neural_PD=1,

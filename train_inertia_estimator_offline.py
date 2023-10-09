@@ -15,8 +15,12 @@ from torch.utils.data import (
     DataLoader,
     Subset)
 from inertia_models import define_inertia_estimator
-from inertia_losses import LossName, ImpulseLoss
+from inertia_losses import (
+    LossName,
+    ImpulseLoss,
+    VelocityLoss)
 from tqdm import tqdm
+from Utils.misc import clean_massMat
 from Utils.inertia_utils import move_dict_to_device
 from torch.utils.tensorboard import SummaryWriter
 from Visualizations.inertia_visualization import InertiaMatrixVisualizer
@@ -44,6 +48,7 @@ if __name__ == "__main__":
     assert len(force_specs) > 0
     estimation_specs = config["estimation_specs"]
     num_train_steps = estimation_specs["num_train_steps"]
+    loss_name = estimation_specs["loss"]["name"]
     optimizer_specs = estimation_specs["optimizer"]
     batch_size = estimation_specs["batch_size"]
     steps_til_val = estimation_specs["steps_til_val"]
@@ -69,7 +74,6 @@ if __name__ == "__main__":
     dt_dcycle = 0.011
     dt = n_iters * dt_dcycle
     device = "cuda"
-    loss_name = LossName.IMPULSE_LOSS
     
     # load data
     dataset = PerMotionDataset(h5_path, seq_length)
@@ -117,6 +121,10 @@ if __name__ == "__main__":
         # define the loss class
         if loss_name == LossName.IMPULSE_LOSS:
             loss_cls = ImpulseLoss(dof=dof, reduction="mean")
+        elif loss_name == LossName.VELOCITY_LOSS:
+            loss_cls = VelocityLoss(dof=dof, reduction="mean")
+        else:
+            raise ValueError("Invalid loss name")
 
         # define optimizer
         if network != "CRBA":
@@ -172,12 +180,22 @@ if __name__ == "__main__":
                 optimizer.zero_grad()
             model.train()
             model_output_train = model(model_input_train)
+            # NOTE: if we're using velocity loss, for CRBA, should take M's inverse
+            # for fair comparison
+            if network == "CRBA" and loss_name == LossName.VELOCITY_LOSS:
+                m_inv = torch.zeros_like(model_output_train["inertia"]).to(device)
+                for i in range(len(model_output_train["inertia"])):
+                    # print(f"predicted M has shape: {model_output_train['inertia'][i].shape}")
+                    # print(f"norm of M: {torch.norm(model_output_train['inertia'][i])}")
+                    m_inv[i] = torch.linalg.solve(
+                        model_output_train["inertia"][i], torch.eye(dof).to(device))
+                m_inv = clean_massMat(m_inv)
+                model_output_train["inertia"] = m_inv
 
             # compute loss and backprop
             qfrc_net = 0
             for force_name, force_scale in force_specs.items():
                 qfrc_net += force_scale * data_train_device[force_name]
-            
             loss_dict = loss_cls.loss(
                 model_output_train["inertia"],
                 model_input_train["qvel"],
@@ -213,11 +231,20 @@ if __name__ == "__main__":
                 model.eval()
                 with torch.no_grad():
                     model_output_val = model(model_input_val)
+                if network == "CRBA" and loss_name == LossName.VELOCITY_LOSS:
+                    m_inv = torch.zeros_like(model_output_val["inertia"]).to(device)
+                    for i in range(len(model_output_val["inertia"])):
+                        m_inv[i] = torch.inverse(model_output_val["inertia"][i])
+                    m_inv = clean_massMat(m_inv)
+                    model_output_val["inertia"] = m_inv
                 
                 # compute loss as metric
                 qfrc_net = 0
                 for force_name, force_scale in force_specs.items():
                     qfrc_net += force_scale * data_val_device[force_name]
+                # print(f"inertia has shape: {model_output_val['inertia'].shape}")
+                # print(f"qvel has shape: {model_input_val['qvel'].shape}")
+                # print(f"qfrc_net has shape: {qfrc_net.shape}")
                 loss_dict = loss_cls.loss(
                     model_output_val["inertia"],
                     model_input_val["qvel"],
@@ -243,7 +270,13 @@ if __name__ == "__main__":
         model.eval()
         with torch.no_grad():
             model_output_test = model(model_input_test)
-            test_results[model_name] = model_output_test
+        if network == "CRBA" and loss_name == LossName.VELOCITY_LOSS:
+            m_inv = torch.zeros_like(model_output_test["inertia"]).to(device)
+            for i in range(len(model_output_test["inertia"])):
+                m_inv[i] = torch.inverse(model_output_test["inertia"][i])
+            m_inv = clean_massMat(m_inv)
+            model_output_test["inertia"] = m_inv
+        test_results[model_name] = model_output_test
 
         # save data
         data_save_dir_per_model = os.path.join(
@@ -259,8 +292,14 @@ if __name__ == "__main__":
 
     # visualize results
     print(f"Visualizing...")
+    if loss_name == LossName.IMPULSE_LOSS:
+        matrix_name = "inertia"
+    elif loss_name == LossName.VELOCITY_LOSS:
+        matrix_name = "inertia_inverse"
+    else:
+        raise ValueError("Invalid loss name")
     M_visualizer = InertiaMatrixVisualizer(
-        "inertia")
+        matrix_name)
     Ms = np.zeros(
         (len(test_results), len(test_seq_idxs), seq_length, dof, dof))
     times = dt * np.arange(0, seq_length) * 1000
