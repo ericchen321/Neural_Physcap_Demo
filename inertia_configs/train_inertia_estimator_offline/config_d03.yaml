@@ -1,5 +1,5 @@
 # general
-config_name: "config_d02"
+config_name: "config_d03"
 h5_path: "data_logging/demo/sample_dance+t=2023-10-09-17-37-58/data+seq_name=sample_dance.h5"
 seq_length: 2
 
@@ -11,7 +11,7 @@ force_specs:
 estimation_specs:
   num_train_steps: 4000
   loss:
-    name: "velocity_loss"
+    name: "impulse_loss"
   optimizer:
     name: "Adam"
     params:

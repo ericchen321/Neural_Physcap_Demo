@@ -22,6 +22,7 @@ from torch.autograd import Variable
 import argparse  
 from datetime import datetime
 import h5py
+from torch.nn.functional import mse_loss
 
 
 class InferencePipeline():
@@ -221,6 +222,8 @@ class InferencePipeline():
 
         ### Initialization ###
         all_q , all_p_3ds, all_tau, all_iter_q =  [],[],[],[]
+        all_iter_qfrc_net = []
+        all_iter_qdot = []
         qpos_gt = []
         qvel_gt = []
         qvel_opt = []
@@ -284,7 +287,9 @@ class InferencePipeline():
                     M = ut.get_mass_mat_cpu(self.model, q0.detach().clone().cpu().numpy())
                     # print(f"cond num of M: {np.linalg.cond(M)}")
                     M_inv = torch.inverse(M).clone()
+                    # print(f"norm of M_inv before cleaning: {torch.norm(M_inv)}")
                     M_inv = ut.clean_massMat(M_inv)
+                    # print(f"norm of M_inv after cleaning: {torch.norm(M_inv)}")
                     J = CU.get_contact_jacobis6D_cpu(self.model, q0.numpy(), [self.rbdl_dic['left_ankle'], self.rbdl_dic['right_ankle']])  # ankles
 
                     quat0 = torch.cat((q0[:, -1].view(-1, 1), q0[:, 3:6]), 1).detach().clone()
@@ -317,21 +322,33 @@ class InferencePipeline():
                      
                     ### Forward Dynamics and Pose Update ###
                     tau_special = tau_gcc - gen_conF
-                    qddot = self.PyFD(tau_special + gen_conF - gcc, M_inv)
+                    qfrc_net = tau_special + gen_conF - gcc
+                    qddot = self.PyFD(qfrc_net, M_inv)
                     quat, q, qdot, _ = CU.pose_update_quat_cpu(qdot0.detach(), q0.detach(), quat0.detach(), delta_t, qddot, self.speed_limit, th_zero=1)
                     
-                    # WTS per-iteration impulse loss is large
+                    # inspect per-iteration impulse loss
                     # Mdv_iter = torch.bmm(
                     #     torch.FloatTensor(M),
                     #     torch.FloatTensor(qdot - qdot0).view(n_b, 46, 1))
-                    # impl_opt_iter = delta_t * torch.FloatTensor(tau_special + gen_conF - gcc)
-                    # loss_iter = torch.norm(Mdv_iter - impl_opt_iter)
-                    # print(f"impulse loss per iter: {loss_iter}")
+                    # impl_opt_iter = delta_t * torch.FloatTensor(qfrc_net)
+                    # loss_iter = mse_loss(Mdv_iter, impl_opt_iter)
+                    # print(f"impulse loss (in cycle): {loss_iter}")
+
+                    # inspect per-iteration velocity loss
+                    # qvel_diff_iter = torch.FloatTensor(qdot - qdot0).view(n_b, 46, 1)
+                    # Minv_tau_dt_iter = delta_t * torch.bmm(
+                    #     torch.FloatTensor(M_inv),
+                    #     torch.FloatTensor(qfrc_net).view(n_b, 46, 1))
+                    # loss_iter = mse_loss(qvel_diff_iter, Minv_tau_dt_iter)
+                    # print(f"velocity loss (in cycle): {loss_iter}")
 
                     qdot0 = qdot.detach().clone()
                     q0 = AU.angle_normalize_batch_cpu(q.detach().clone())
                     if iter == 0: all_tau.append(torch.flatten(tau_special).numpy())
                     all_iter_q.append(torch.flatten(q0).numpy())
+
+                    all_iter_qdot.append(qdot.numpy())
+                    all_iter_qfrc_net.append(qfrc_net.cpu().detach().numpy())
                 
                 ### store the predictions ###             
                 p_3D_p = self.PyFK( [self.model_addresses["0"]], self.target_joint_ids,delta_t, torch.FloatTensor([0]) , q0) 
@@ -348,8 +365,12 @@ class InferencePipeline():
                 bfrc_gr_opt.append(lr_th_cons.detach().numpy())
                 qfrc_gr_opt.append(gen_conF.detach().numpy())
                 M_rigid.append(M.detach().numpy())
-                tau_opt.append(tau.detach().numpy())
                 gravcol.append(gcc.detach().numpy())
+                # NOTE: here we compute the averaged tau over the last dynamic cycle
+                tau_opt.append(
+                    np.mean(np.array(
+                        all_iter_qfrc_net[-1*self.n_iter:]).reshape(self.n_iter, n_b, 46, 1),
+                    axis=0))
 
                 # WTS impulse loss is large
                 # q_tar_norm = AU.angle_normalize_batch_cpu(q_tar.detach().clone())
@@ -358,29 +379,44 @@ class InferencePipeline():
                 #     Mdv = torch.bmm(
                 #         torch.FloatTensor(M),
                 #         torch.FloatTensor(qvel_gt[-1] - qvel_gt[-2]).view(n_b, 46, 1))
-                #     impl_opt = self.n_iter * delta_t * torch.FloatTensor(tau_opt[-1])
-                #     loss = torch.norm(Mdv - impl_opt)
-                #     print(f"impulse loss using GT qvel: {loss}")
+                #     impl = self.n_iter * delta_t * torch.FloatTensor(tau_opt[-1]).view(n_b, 46, 1)
+                #     # qfrc_nets = torch.FloatTensor(np.array(
+                #     #     all_iter_qfrc_net[-1*self.n_iter:])).view(self.n_iter, n_b, 46, 1)
+                #     # impl = self.n_iter * delta_t * torch.sum(qfrc_nets, 0)
+                #     loss = mse_loss(Mdv, impl)
+                #     print(f"impulse loss (out of cycle) using GT qvel: {loss}")
                 # if len(qvel_opt) >= 2:
                 #     Mdv = torch.bmm(
                 #         torch.FloatTensor(M),
                 #         torch.FloatTensor(qvel_opt[-1] - qvel_opt[-2]).view(n_b, 46, 1))
-                #     impl_opt = self.n_iter * delta_t * torch.FloatTensor(tau_opt[-1])
-                #     loss = torch.norm(Mdv - impl_opt)
-                #     print(f"impulse loss using opt qvel: {loss}")
+                #     qfrc_nets = torch.FloatTensor(np.array(
+                #             all_iter_qfrc_net[-1*self.n_iter:])).view(self.n_iter, n_b, 46, 1)
+                #     impl = self.n_iter * delta_t * torch.sum(qfrc_nets, 0)
+                #     loss = mse_loss(Mdv, impl)
+                #     print(f"impulse loss (out of cycle) using opt qvel: {loss}")
 
                 # WTS velocity loss is large
                 # if len(qvel_gt) >= 2:
                 #     qvel_diff_gt = torch.FloatTensor(qvel_gt[-1] - qvel_gt[-2]).view(n_b, 46, 1)
-                #     Minv_impl = self.n_iter * delta_t * torch.bmm(
-                #         torch.FloatTensor(M_inv), torch.FloatTensor(tau_opt[-1]).view(n_b, 46, 1))
-                #     loss = torch.norm(qvel_diff_gt - Minv_impl)
-                #     print(f"velocity loss using GT qvel: {loss}")
+                #     qvel_diff_pred = self.n_iter * delta_t * torch.bmm(
+                #         torch.FloatTensor(M_inv),
+                #         torch.FloatTensor(tau_opt[-1]).view(n_b, 46, 1))
+                #     # qfrc_nets = torch.FloatTensor(np.array(
+                #     #     all_iter_qfrc_net[-1*self.n_iter:])).view(self.n_iter, n_b, 46, 1)
+                #     # impl = self.n_iter * delta_t * torch.sum(qfrc_nets, 0)
+                #     # qvel_diff_pred = torch.bmm(
+                #     #     torch.FloatTensor(M_inv),
+                #     #     impl.view(n_b, 46, 1))
+                #     print(f"norm of M: {torch.norm(M)}")
+                #     print(f"norm of M_inv: {torch.norm(M_inv)}")
+                #     print(f"norm of qvel_diff_pred: {torch.norm(qvel_diff_pred)}")
+                #     loss = mse_loss(qvel_diff_pred, qvel_diff_gt)
+                #     print(f"velocity loss (out of cycle) using GT qvel: {loss}")
                 # if len(qvel_opt) >= 2:
                 #     qvel_diff_opt = torch.FloatTensor(qvel_opt[-1] - qvel_opt[-2]).view(n_b, 46, 1)
-                #     Minv_impl = self.n_iter * delta_t * torch.bmm(
+                #     qvel_diff_pred = self.n_iter * delta_t * torch.bmm(
                 #         torch.FloatTensor(M_inv), torch.FloatTensor(tau_opt[-1]).view(n_b, 46, 1))
-                #     loss = torch.norm(qvel_diff_opt - Minv_impl)
+                #     loss = mse_loss(qvel_diff_pred, qvel_diff_opt)
                 #     print(f"velocity loss using opt qvel: {loss}")
 
                 # check joint pose error

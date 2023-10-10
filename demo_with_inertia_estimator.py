@@ -533,10 +533,6 @@ if __name__ == "__main__":
     time_curr = datetime.now().strftime('%Y-%m-%d-%H-%M-%S')
     input_basename = os.path.splitext(
         os.path.basename(args.input_path))[0]
-    save_base_path = "".join(
-        [f"{args.save_base_path}/",
-         "demo_with_inertia_estimator/",
-         f"{input_basename}+t={time_curr}"])
     urdf_path = args.urdf_path
     net_path=args.net_path  
     w=args.img_width
@@ -562,6 +558,12 @@ if __name__ == "__main__":
             print(exc)
     estimation_specs = inertia_est_config["estimation_specs"]
     predict_M_inv = estimation_specs["loss"]["name"] == LossName.VELOCITY_LOSS
+    
+    config_name = inertia_est_config["config_name"]
+    save_base_path = "".join(
+        [f"{args.save_base_path}/",
+         "demo_with_inertia_estimator/",
+         f"{config_name}+{input_basename}+t={time_curr}"])
 
     for model_name, model_specs in estimation_specs["models"].items():
         # define save path per model
