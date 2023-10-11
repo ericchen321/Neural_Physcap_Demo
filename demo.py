@@ -221,9 +221,13 @@ class InferencePipeline():
     def inference(self):
 
         ### Initialization ###
-        all_q , all_p_3ds, all_tau, all_iter_q =  [],[],[],[]
-        all_iter_qfrc_net = []
-        all_iter_qdot = []
+        qpos_opt , p_3ds_opt, tau_special_iters, qpos_opt_iters =  [],[],[],[]
+        tau_opt_iters = []
+        qvel_opt_iters = []
+        bfrc_gr_opt_iters = []
+        qfrc_gr_opt_iters = []
+        gravcol_iters = []
+        M_rigid_iters = []
         qpos_gt = []
         qvel_gt = []
         qvel_opt = []
@@ -340,20 +344,29 @@ class InferencePipeline():
                     #     torch.FloatTensor(M_inv),
                     #     torch.FloatTensor(qfrc_net).view(n_b, 46, 1))
                     # loss_iter = mse_loss(qvel_diff_iter, Minv_tau_dt_iter)
+                    # print(f"qvel_diff_iter's norm: {torch.norm(qvel_diff_iter)}")
+                    # print(f"Minv_tau_dt_iter's norm: {torch.norm(Minv_tau_dt_iter)}")
                     # print(f"velocity loss (in cycle): {loss_iter}")
 
                     qdot0 = qdot.detach().clone()
                     q0 = AU.angle_normalize_batch_cpu(q.detach().clone())
-                    if iter == 0: all_tau.append(torch.flatten(tau_special).numpy())
-                    all_iter_q.append(torch.flatten(q0).numpy())
-
-                    all_iter_qdot.append(qdot.numpy())
-                    all_iter_qfrc_net.append(qfrc_net.cpu().detach().numpy())
+                    
+                    # NOTE: here we sample per-iteration data
+                    # if iter == 0:
+                    #     tau_special_iters.append(torch.flatten(tau_special).numpy())
+                    tau_special_iters.append(tau_special.numpy())
+                    qpos_opt_iters.append(q0.cpu().detach().numpy())
+                    qvel_opt_iters.append(qdot.numpy())
+                    bfrc_gr_opt_iters.append(lr_th_cons.cpu().detach().numpy())
+                    qfrc_gr_opt_iters.append(gen_conF.numpy())
+                    tau_opt_iters.append(qfrc_net.cpu().detach().numpy())
+                    gravcol_iters.append(gcc.cpu().detach().numpy())
+                    M_rigid_iters.append(M.cpu().detach().numpy())
                 
                 ### store the predictions ###             
                 p_3D_p = self.PyFK( [self.model_addresses["0"]], self.target_joint_ids,delta_t, torch.FloatTensor([0]) , q0) 
-                all_q.append(torch.flatten(q0).detach().numpy()) 
-                all_p_3ds.append(p_3D_p[0].cpu().numpy()) 
+                qpos_opt.append(q0.cpu().detach().numpy()) 
+                p_3ds_opt.append(p_3D_p[0].cpu().numpy()) 
 
                 # store kin + dyn data
                 qpos_gt.append(q_tar.detach().numpy())
@@ -362,14 +375,23 @@ class InferencePipeline():
                         AU.differentiate_qpos(
                             qpos_gt[-1], qpos_gt[-2], self.n_iter*delta_t))
                 qvel_opt.append(qdot.detach().numpy())
-                bfrc_gr_opt.append(lr_th_cons.detach().numpy())
-                qfrc_gr_opt.append(gen_conF.detach().numpy())
                 M_rigid.append(M.detach().numpy())
-                gravcol.append(gcc.detach().numpy())
-                # NOTE: here we compute the averaged tau over the last dynamic cycle
+                # NOTE: here we compute the averaged forces over the last dynamic cycle
+                bfrc_gr_opt.append(
+                    np.mean(np.array(
+                        bfrc_gr_opt_iters[-1*self.n_iter:]).reshape(self.n_iter, n_b, 12),
+                    axis=0))
+                qfrc_gr_opt.append(
+                    np.mean(np.array(
+                        qfrc_gr_opt_iters[-1*self.n_iter:]).reshape(self.n_iter, n_b, 46),
+                    axis=0))
                 tau_opt.append(
                     np.mean(np.array(
-                        all_iter_qfrc_net[-1*self.n_iter:]).reshape(self.n_iter, n_b, 46, 1),
+                        tau_opt_iters[-1*self.n_iter:]).reshape(self.n_iter, n_b, 46),
+                    axis=0))
+                gravcol.append(
+                    np.mean(np.array(
+                        gravcol_iters[-1*self.n_iter:]).reshape(self.n_iter, n_b, 46),
                     axis=0))
 
                 # WTS impulse loss is large
@@ -381,7 +403,7 @@ class InferencePipeline():
                 #         torch.FloatTensor(qvel_gt[-1] - qvel_gt[-2]).view(n_b, 46, 1))
                 #     impl = self.n_iter * delta_t * torch.FloatTensor(tau_opt[-1]).view(n_b, 46, 1)
                 #     # qfrc_nets = torch.FloatTensor(np.array(
-                #     #     all_iter_qfrc_net[-1*self.n_iter:])).view(self.n_iter, n_b, 46, 1)
+                #     #     tau_opt_iters[-1*self.n_iter:])).view(self.n_iter, n_b, 46, 1)
                 #     # impl = self.n_iter * delta_t * torch.sum(qfrc_nets, 0)
                 #     loss = mse_loss(Mdv, impl)
                 #     print(f"impulse loss (out of cycle) using GT qvel: {loss}")
@@ -390,7 +412,7 @@ class InferencePipeline():
                 #         torch.FloatTensor(M),
                 #         torch.FloatTensor(qvel_opt[-1] - qvel_opt[-2]).view(n_b, 46, 1))
                 #     qfrc_nets = torch.FloatTensor(np.array(
-                #             all_iter_qfrc_net[-1*self.n_iter:])).view(self.n_iter, n_b, 46, 1)
+                #             tau_opt_iters[-1*self.n_iter:])).view(self.n_iter, n_b, 46, 1)
                 #     impl = self.n_iter * delta_t * torch.sum(qfrc_nets, 0)
                 #     loss = mse_loss(Mdv, impl)
                 #     print(f"impulse loss (out of cycle) using opt qvel: {loss}")
@@ -402,7 +424,7 @@ class InferencePipeline():
                 #         torch.FloatTensor(M_inv),
                 #         torch.FloatTensor(tau_opt[-1]).view(n_b, 46, 1))
                 #     # qfrc_nets = torch.FloatTensor(np.array(
-                #     #     all_iter_qfrc_net[-1*self.n_iter:])).view(self.n_iter, n_b, 46, 1)
+                #     #     tau_opt_iters[-1*self.n_iter:])).view(self.n_iter, n_b, 46, 1)
                 #     # impl = self.n_iter * delta_t * torch.sum(qfrc_nets, 0)
                 #     # qvel_diff_pred = torch.bmm(
                 #     #     torch.FloatTensor(M_inv),
@@ -424,22 +446,17 @@ class InferencePipeline():
          
         ########### save the predictions ###############
         print('saving predictions ...')
-        all_q = np.array(all_q)  
-        all_p_3ds=np.array(all_p_3ds) 
-        all_iter_q=np.array(all_iter_q)
+        qpos_opt_flat = np.array(qpos_opt).reshape(len(qpos_opt), -1)
+        p_3ds_opt = np.array(p_3ds_opt) 
+        qpos_opt_iters_flat = np.array(qpos_opt_iters).reshape(len(qpos_opt_iters), -1)
         if not os.path.exists(self.save_base_path +  "/"): 
             os.makedirs(self.save_base_path + "/")
-        print(self.save_base_path +  "/q_iter_dyn.npy")
-        np.save(self.save_base_path +  "/q_iter_dyn.npy", all_iter_q)
-        np.save(self.save_base_path +  "/q_dyn.npy", all_q)   
-        np.save(self.save_base_path +  "/p_3D_dyn.npy", all_p_3ds)  
+        np.save(self.save_base_path +  "/qpos_opt_iters_flat.npy", qpos_opt_iters_flat)
+        np.save(self.save_base_path +  "/qpos_opt_flat.npy", qpos_opt_flat)   
+        np.save(self.save_base_path +  "/p_3ds_opt.npy", p_3ds_opt)  
         
-        # save kin + dyn data
-        # np.save(self.save_base_path +  "/qpos_gt.npy", qpos_gt)
-        # np.save(self.save_base_path +  "/qvel_gt.npy", qvel_gt)
-        # np.save(self.save_base_path +  "/bfrc_gr_opt.npy", bfrc_gr_opt)
-        # np.save(self.save_base_path +  "/qfrc_gr_opt.npy", qfrc_gr_opt)
-        print('saving kin + dyn data...')
+        # save all kin + dyn data in h5 format
+        print('saving all kin + dyn data in h5 file...')
         qpos_gt = np.array(qpos_gt[1:])[:, 0]
         qvel_gt = np.array(qvel_gt)[:, 0]
         bfrc_gr_opt = np.array(bfrc_gr_opt[1:])[:, 0]
@@ -447,13 +464,27 @@ class InferencePipeline():
         M_rigid = np.array(M_rigid[1:])[:, 0]
         tau_opt = np.array(tau_opt[1:])[:, 0]
         gravcol = np.array(gravcol[1:])[:, 0]
+        qpos_opt_iters = np.array(qpos_opt_iters)[:, 0]
+        qvel_opt_iters = np.array(qvel_opt_iters)[:, 0]
+        bfrc_gr_opt_iters = np.array(bfrc_gr_opt_iters)[:, 0]
+        qfrc_gr_opt_iters = np.array(qfrc_gr_opt_iters)[:, 0]
+        tau_opt_iters = np.array(tau_opt_iters)[:, 0]
+        gravcol_iters = np.array(gravcol_iters)[:, 0]
+        M_rigid_iters = np.array(M_rigid_iters)[:, 0]
         print(f"qpos_gt.shape: {qpos_gt.shape}")
         print(f"qvel_gt.shape: {qvel_gt.shape}")
         print(f"bfrc_gr_opt.shape: {bfrc_gr_opt.shape}")
         print(f"qfrc_gr_opt.shape: {qfrc_gr_opt.shape}")
-        print(f"M_rigid.shape: {M_rigid.shape}")
         print(f"tau_opt.shape: {tau_opt.shape}")
         print(f"gravcol.shape: {gravcol.shape}")
+        print(f"M_rigid.shape: {M_rigid.shape}")
+        print(f"qpos_opt_iters.shape: {qpos_opt_iters.shape}")
+        print(f"qvel_opt_iters.shape: {qvel_opt_iters.shape}")
+        print(f"bfrc_gr_opt_iters.shape: {bfrc_gr_opt_iters.shape}")
+        print(f"qfrc_gr_opt_iters.shape: {qfrc_gr_opt_iters.shape}")
+        print(f"tau_opt_iters.shape: {tau_opt_iters.shape}")
+        print(f"gravcol_iters.shape: {gravcol_iters.shape}")
+        print(f"M_rigid_iters.shape: {M_rigid_iters.shape}")
         h5path = f"{self.save_base_path}/data+seq_name={self.seq_name}.h5"
         with h5py.File(h5path, "w") as h5file:
             # save data
@@ -466,11 +497,25 @@ class InferencePipeline():
             h5file.create_dataset(
                 "qfrc_gr_opt", data = qfrc_gr_opt)
             h5file.create_dataset(
-                "M_rigid", data = M_rigid)
-            h5file.create_dataset(
                 "tau_opt", data = tau_opt)
             h5file.create_dataset(
                 "gravcol", data = gravcol)
+            h5file.create_dataset(
+                "M_rigid", data = M_rigid)
+            h5file.create_dataset(
+                "qpos_opt_iters", data = qpos_opt_iters)
+            h5file.create_dataset(
+                "qvel_opt_iters", data = qvel_opt_iters)
+            h5file.create_dataset(
+                "bfrc_gr_opt_iters", data = bfrc_gr_opt_iters)
+            h5file.create_dataset(
+                "qfrc_gr_opt_iters", data = qfrc_gr_opt_iters)
+            h5file.create_dataset(
+                "tau_opt_iters", data = tau_opt_iters)
+            h5file.create_dataset(
+                "gravcol_iters", data = gravcol_iters)
+            h5file.create_dataset(
+                "M_rigid_iters", data = M_rigid_iters)
         print(f"Kin + dyn data saved to {h5path}")
         print('Done.')
         return 0

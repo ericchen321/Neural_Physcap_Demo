@@ -60,7 +60,7 @@ class ImpulseLoss:
             num_sims, num_steps-1, self.dof)
         
         # compute GT impulse
-        impl_gt = (qfrc_gt[:, :-1] * dt).view(
+        impl_gt = (qfrc_gt[:, 1:] * dt).view(
             num_sims, num_steps-1, self.dof)
         
         # compute MSE loss over impulses
@@ -115,7 +115,7 @@ class VelocityLoss:
             num_sims, num_steps-1, self.dof)
         
         # compute GT impulse
-        impl_gt = (qfrc_gt[:, :-1] * dt).view(
+        impl_gt = (qfrc_gt[:, 1:] * dt).view(
             num_sims, num_steps-1, self.dof)
         
         # predict qvel_diff
@@ -134,8 +134,8 @@ class VelocityLoss:
         # while True:
         #     pass
         loss = mse_loss(
-            qvel_diff_gt.reshape(num_sims*(num_steps-1), self.dof),
             qvel_diff_pred.reshape(num_sims*(num_steps-1), self.dof),
+            qvel_diff_gt.reshape(num_sims*(num_steps-1), self.dof),
             reduction=self.reduction)
 
         return {

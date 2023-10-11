@@ -26,6 +26,29 @@ from torch.utils.tensorboard import SummaryWriter
 from Visualizations.inertia_visualization import InertiaMatrixVisualizer
 
 
+def parse_force_name(
+    force_name_generic: str,
+    use_per_cycle_data: bool) -> PerMotionDataName:
+    if force_name_generic == "tau":
+        if use_per_cycle_data:
+            force_name = PerMotionDataName.TAU_OPT_ITERS
+        else:
+            force_name = PerMotionDataName.TAU_OPT
+    elif force_name_generic == "gravcol":
+        if use_per_cycle_data:
+            force_name = PerMotionDataName.GRAVCOL_ITERS
+        else:
+            force_name = PerMotionDataName.GRAVCOL
+    elif force_name_generic == "grf":
+        if use_per_cycle_data:
+            force_name = PerMotionDataName.QFRC_GR_OPT_ITERS
+        else:
+            force_name = PerMotionDataName.QFRC_GR_OPT
+    else:
+        raise ValueError("Invalid generic force name")
+    return force_name
+
+
 if __name__ == "__main__":
     p = argparse.ArgumentParser()
     p.add_argument(
@@ -44,8 +67,10 @@ if __name__ == "__main__":
     motion_name = os.path.splitext(os.path.basename(h5_path))[0].split("seq_name=")[1]
     time_curr = datetime.now().strftime('%Y-%m-%d-%H-%M-%S')
     seq_length = config["seq_length"]
-    force_specs = config["force_specs"]
-    assert len(force_specs) > 0
+    data_use_opts = config["data_use"]
+    use_per_cycle_data = data_use_opts["use_per_cycle_data"]
+    force_terms = data_use_opts["force_terms"]
+    assert len(force_terms) > 0
     estimation_specs = config["estimation_specs"]
     num_train_steps = estimation_specs["num_train_steps"]
     loss_name = estimation_specs["loss"]["name"]
@@ -72,11 +97,26 @@ if __name__ == "__main__":
     dof = 46
     n_iters = 6
     dt_dcycle = 0.011
-    dt = n_iters * dt_dcycle
+    if use_per_cycle_data:
+        dt = dt_dcycle
+    else:
+        dt = n_iters * dt_dcycle
     device = "cuda"
+
+    # select names of kinematic data to use
+    if use_per_cycle_data:
+        qpos_name = PerMotionDataName.QPOS_OPT_ITERS
+        qvel_name = PerMotionDataName.QVEL_OPT_ITERS
+        tau_name = PerMotionDataName.TAU_OPT_ITERS
+        gravcol_name = PerMotionDataName.GRAVCOL_ITERS
+    else:
+        qpos_name = PerMotionDataName.QPOS_GT
+        qvel_name = PerMotionDataName.QVEL_GT
+        tau_name = PerMotionDataName.TAU_OPT
+        gravcol_name = PerMotionDataName.GRAVCOL
     
     # load data
-    dataset = PerMotionDataset(h5_path, seq_length)
+    dataset = PerMotionDataset(h5_path, seq_length, use_per_cycle_data)
     train_size = int(len(dataset) * 0.8)
     test_size = int(len(dataset) * 0.1)
     val_size = len(dataset) - train_size - test_size
@@ -172,8 +212,8 @@ if __name__ == "__main__":
             data_train_device = move_dict_to_device(
                 data_train, device)
             model_input_train = {
-                "qpos": data_train_device[PerMotionDataName.QPOS_GT],
-                "qvel": data_train_device[PerMotionDataName.QVEL_GT]}
+                "qpos": data_train_device[qpos_name],
+                "qvel": data_train_device[qvel_name]}
             
             # forward pass
             if network != "CRBA":
@@ -183,30 +223,21 @@ if __name__ == "__main__":
             # NOTE: if we're using velocity loss, for CRBA, should take M's inverse
             # for fair comparison
             if network == "CRBA" and loss_name == LossName.VELOCITY_LOSS:
-                m_inv = torch.zeros_like(model_output_train["inertia"]).to(device)
-                for i in range(len(model_output_train["inertia"])):
-                    # print(f"predicted M has shape: {model_output_train['inertia'][i].shape}")
-                    # print(f"norm of M: {torch.norm(model_output_train['inertia'][i])}")
-                    m_inv[i] = torch.linalg.solve(
-                        model_output_train["inertia"][i], torch.eye(dof).to(device))
+                m_inv = torch.inverse(model_output_train["inertia"])
                 m_inv = clean_massMat(m_inv)
                 model_output_train["inertia"] = m_inv
 
             # compute loss and backprop
             qfrc_net = 0
-            for force_name, force_scale in force_specs.items():
-                qfrc_net += force_scale * data_train_device[force_name]
+            for force_name_generic, force_scale in force_terms.items():
+                qfrc_net += force_scale * data_train_device[
+                    parse_force_name(force_name_generic, use_per_cycle_data)]
             loss_dict = loss_cls.loss(
                 model_output_train["inertia"],
                 model_input_train["qvel"],
                 qfrc_net,
                 torch.FloatTensor([dt]).to(device))
             loss = loss_dict["loss"]
-            # print(f"inertia[0] has norm: {model_output_train['inertia'][0].norm()}")
-            # print(f"impl_pred[0] has norm: {loss_dict['impl_pred'][0].norm()}")
-            # print(f"impl_gt[0] has norm: {loss_dict['impl_gt'][0].norm()}")
-            # while True:
-            #     pass
             if network != "CRBA":
                 loss.backward()
                 optimizer.step()
@@ -224,27 +255,23 @@ if __name__ == "__main__":
                 data_val_device = move_dict_to_device(
                     data_val, device)
                 model_input_val = {
-                    "qpos": data_val_device[PerMotionDataName.QPOS_GT],
-                    "qvel": data_val_device[PerMotionDataName.QVEL_GT]}
+                    "qpos": data_val_device[qpos_name],
+                    "qvel": data_val_device[qvel_name]}
                 
                 # forward pass
                 model.eval()
                 with torch.no_grad():
                     model_output_val = model(model_input_val)
                 if network == "CRBA" and loss_name == LossName.VELOCITY_LOSS:
-                    m_inv = torch.zeros_like(model_output_val["inertia"]).to(device)
-                    for i in range(len(model_output_val["inertia"])):
-                        m_inv[i] = torch.inverse(model_output_val["inertia"][i])
+                    m_inv = torch.inverse(model_output_val["inertia"])
                     m_inv = clean_massMat(m_inv)
                     model_output_val["inertia"] = m_inv
                 
                 # compute loss as metric
                 qfrc_net = 0
-                for force_name, force_scale in force_specs.items():
-                    qfrc_net += force_scale * data_val_device[force_name]
-                # print(f"inertia has shape: {model_output_val['inertia'].shape}")
-                # print(f"qvel has shape: {model_input_val['qvel'].shape}")
-                # print(f"qfrc_net has shape: {qfrc_net.shape}")
+                for force_name_generic, force_scale in force_terms.items():
+                    qfrc_net += force_scale * data_val_device[
+                        parse_force_name(force_name_generic, use_per_cycle_data)]
                 loss_dict = loss_cls.loss(
                     model_output_val["inertia"],
                     model_input_val["qvel"],
@@ -264,16 +291,14 @@ if __name__ == "__main__":
         data_test_device = move_dict_to_device(
             data_test, device)
         model_input_test = {
-            "qpos": data_test_device[PerMotionDataName.QPOS_GT],
-            "qvel": data_test_device[PerMotionDataName.QVEL_GT]}
+            "qpos": data_test_device[qpos_name],
+            "qvel": data_test_device[qvel_name]}
         # forward pass
         model.eval()
         with torch.no_grad():
             model_output_test = model(model_input_test)
         if network == "CRBA" and loss_name == LossName.VELOCITY_LOSS:
-            m_inv = torch.zeros_like(model_output_test["inertia"]).to(device)
-            for i in range(len(model_output_test["inertia"])):
-                m_inv[i] = torch.inverse(model_output_test["inertia"][i])
+            m_inv = torch.inverse(model_output_test["inertia"])
             m_inv = clean_massMat(m_inv)
             model_output_test["inertia"] = m_inv
         test_results[model_name] = model_output_test

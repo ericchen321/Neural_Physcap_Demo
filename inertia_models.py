@@ -752,16 +752,10 @@ class CRBA(nn.Module):
         """
         num_sims, num_steps, _ = x["qpos"].shape
         qpos_init = x["qpos"][:, 0].view(num_sims, self.dof+1)
-        M_rigid_init = torch.zeros(
-            (num_sims, self.dof, self.dof),
-            dtype=torch.float32,
-            device=x["qpos"].device)
-        for sim_idx in range(num_sims):
-            m = get_mass_mat(
-                self.model,
-                qpos_init[[sim_idx]].clone().cpu().detach().numpy(),
-                device = x["qpos"].device).view(1, self.dof, self.dof)
-            M_rigid_init[sim_idx] = m[0]
+        M_rigid_init = get_mass_mat(
+            self.model,
+            qpos_init.clone().cpu().detach().numpy(),
+            device = x["qpos"].device).view(num_sims, self.dof, self.dof)
 
         out = {
             "inertia": M_rigid_init}
