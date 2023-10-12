@@ -53,6 +53,8 @@ if __name__ == "__main__":
     p = argparse.ArgumentParser()
     p.add_argument(
         '--config', type=str, help='path to yaml experiment/data config file', required=True)
+    p.add_argument(
+        '--device', type=str, help='device for train/val/test, cpu or cuda', required=True)
     args = p.parse_args()
 
     with open(args.config, "r") as stream:
@@ -101,7 +103,7 @@ if __name__ == "__main__":
         dt = dt_dcycle
     else:
         dt = n_iters * dt_dcycle
-    device = "cuda"
+    device = args.device
 
     # select names of kinematic data to use
     if use_per_cycle_data:
