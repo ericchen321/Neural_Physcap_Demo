@@ -1,5 +1,6 @@
 # general
-config_name: "config_testing"
+config_name: "config_e03"
+# h5_path: "data_logging/demo/sample_dance+t=2023-10-10-15-03-25/data+seq_name=sample_dance.h5"
 h5_path: "data_logging/demo/sample_dance+t=2023-10-11-12-52-04/data+seq_name=sample_dance.h5"
 seq_length: 2
 
@@ -11,7 +12,7 @@ data_use:
 
 # estimation
 estimation_specs:
-  num_train_steps: 10
+  num_train_steps: 10000
   loss:
     name: "velocity_loss"
   optimizer:
@@ -19,13 +20,9 @@ estimation_specs:
     params:
       learning_rate: 2.5e-4
       amsgrad: True
-  batch_size: 1
-  steps_til_val: 10
+  batch_size: 512
+  steps_til_val: 100
   models:
-    CRBA:
-      arch: "nn"
-      network: "CRBA"
-      urdf_path: "URDF/manual.urdf"
     nn+SymmNet:
       network: "SymmNetQVel"
       mlp:
@@ -50,6 +47,10 @@ estimation_specs:
         positivity: "ReLU"
       activation: "lrelu"
       normalize_inputs: False
+    CRBA:
+      arch: "nn"
+      network: "CRBA"
+      urdf_path: "URDF/manual.urdf"
 
 # visualization
 visual_specs:
