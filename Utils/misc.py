@@ -224,6 +224,7 @@ def clean_massMat(M_inv):
     M_inv[:, :, 6 + 35] = 0
     M_inv[:, :, -1] = 0
     return  M_inv
+
 def vec2zerodiag(data):
     """
     data BxTxC

@@ -115,7 +115,7 @@ class VelocityLoss:
             num_sims, num_steps-1, self.dof)
         
         # compute GT impulse
-        impl_gt = (qfrc_gt[:, 1:] * dt).view(
+        impl_gt = (qfrc_gt[:, :-1] * dt).view(
             num_sims, num_steps-1, self.dof)
         
         # predict qvel_diff

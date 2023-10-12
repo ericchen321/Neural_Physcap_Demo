@@ -28,6 +28,7 @@ import argparse
 from datetime import datetime
 import h5py
 import yaml
+from torch.nn.functional import mse_loss
 
 
 class InferencePipeline():
@@ -259,7 +260,6 @@ class InferencePipeline():
         qvel_opt = []
         bfrc_gr_opt = []
         qfrc_gr_opt = []
-        M_rigid = []
         tau_opt = []
         gravcol = []
       
@@ -350,11 +350,12 @@ class InferencePipeline():
 
                     ### Force Vector Computation ###
                     if self.neural_PD:
-                        # print(f"qdot0's norm: {torch.norm(qdot0)}")
-                        # print(f"qdot0.shape: {qdot0.shape}")
-                        # while True:
-                        #     pass
-                        dynInput = torch.cat((q_tar, q0, qdot0, torch.flatten(M_inv, 1), current_errors,), 1)
+                        # NOTE: for DyNet's M_inv input, we use the inverse of rigid inertia
+                        M_rigid = ut.get_mass_mat_cpu(self.model, q0.detach().clone().cpu().numpy())
+                        M_inv_rigid = torch.inverse(M_rigid).clone()
+                        M_inv_rigid = ut.clean_massMat(M_inv_rigid)
+                        dynInput = torch.cat(
+                            (q_tar, q0, qdot0, torch.flatten(M_inv_rigid, 1), current_errors,), 1)
                         neural_gain, neural_offset = self.DyNet(dynInput )#.cuda()
                         tau = CU.get_neural_development_cpu(errors_trans, errors_ori, errors_art, qdot0, neural_gain.cpu(), neural_offset.cpu(), self.limit,art_only=1, small_z=1)
                     else:
@@ -377,18 +378,48 @@ class InferencePipeline():
                     qddot = self.PyFD(tau_special + gen_conF - gcc, M_inv)
                     quat, q, qdot, _ = CU.pose_update_quat_cpu(qdot0.detach(), q0.detach(), quat0.detach(), delta_t, qddot, self.speed_limit, th_zero=1)
                     
-                    # WTS per-iteration impulse loss is large
+                    # inspect qvel_diff error, and see how large the error grows
+                    # if we scale by 1/delta_t
+                    # qvel_diff = delta_t * torch.bmm(
+                    #     M_inv.view(n_b, 46, 46),
+                    #     (tau_special + gen_conF - gcc).view(n_b, 46, 1)).view(n_b, 46, 1)
+                    # qvel_diff_rigid = delta_t * torch.bmm(
+                    #     M_inv_rigid.view(n_b, 46, 46),
+                    #     (tau_special + gen_conF - gcc).view(n_b, 46, 1)).view(n_b, 46, 1)
+                    # qvel_diff_err = torch.norm(qvel_diff - qvel_diff_rigid)
+                    # print(f"qvel_diff_err: {qvel_diff_err}")
+                    # qvel_diff_err_scaled = torch.norm(
+                    #     qvel_diff/delta_t - qvel_diff_rigid/delta_t)
+                    # print(f"qvel_diff_err_scaled: {qvel_diff_err_scaled}")
+                    
+                    # inspect qddot error
+                    # qddot_rigid = self.PyFD(tau_special + gen_conF - gcc, M_inv_rigid)
+                    # qddot_err = torch.norm(qddot - qddot_rigid)
+                    # print(f"qddot_err: {qddot_err}")
+                    
+                    # inspect per-iteration impulse loss
                     # Mdv_iter = torch.bmm(
                     #     torch.FloatTensor(M),
                     #     torch.FloatTensor(qdot - qdot0).view(n_b, 46, 1))
-                    # impl_opt_iter = delta_t * torch.FloatTensor(tau_special + gen_conF - gcc)
-                    # loss_iter = torch.norm(Mdv_iter - impl_opt_iter)
-                    # print(f"impulse loss per iter: {loss_iter}")
+                    # impl_opt_iter = delta_t * torch.FloatTensor(qfrc_net)
+                    # loss_iter = mse_loss(Mdv_iter, impl_opt_iter)
+                    # print(f"impulse loss (in cycle): {loss_iter}")
+
+                    # inspect per-iteration velocity loss
+                    # qvel_diff_iter = (qdot - qdot0).view(n_b, 46, 1)
+                    # Minv_tau_dt_iter = delta_t * torch.bmm(
+                    #     M_inv,
+                    #     (tau_special + gen_conF - gcc).view(n_b, 46, 1))
+                    # loss_iter = mse_loss(qvel_diff_iter, Minv_tau_dt_iter)
+                    # print(f"velocity loss (in cycle): {loss_iter}")
 
                     qdot0 = qdot.detach().clone()
                     q0 = AU.angle_normalize_batch_cpu(q.detach().clone())
                     if iter == 0: all_tau.append(torch.flatten(tau_special).numpy())
                     all_iter_q.append(torch.flatten(q0).numpy())
+
+                # print(f"inspect per-frame pose error")
+                # print(f"||q_tar - q||: {torch.norm(q_tar - q0, 1)}")
                 
                 ### store the predictions ###             
                 p_3D_p = self.PyFK( [self.model_addresses["0"]], self.target_joint_ids,delta_t, torch.FloatTensor([0]) , q0) 
@@ -404,7 +435,6 @@ class InferencePipeline():
                 qvel_opt.append(qdot.detach().numpy())
                 bfrc_gr_opt.append(lr_th_cons.detach().numpy())
                 qfrc_gr_opt.append(gen_conF.detach().numpy())
-                M_rigid.append(M.detach().numpy())
                 tau_opt.append(tau.detach().numpy())
                 gravcol.append(gcc.detach().numpy())
 
@@ -454,45 +484,6 @@ class InferencePipeline():
         np.save(self.save_base_path +  "/q_iter_dyn.npy", all_iter_q)
         np.save(self.save_base_path +  "/q_dyn.npy", all_q)   
         np.save(self.save_base_path +  "/p_3D_dyn.npy", all_p_3ds)  
-        
-        # save kin + dyn data
-        # np.save(self.save_base_path +  "/qpos_gt.npy", qpos_gt)
-        # np.save(self.save_base_path +  "/qvel_gt.npy", qvel_gt)
-        # np.save(self.save_base_path +  "/bfrc_gr_opt.npy", bfrc_gr_opt)
-        # np.save(self.save_base_path +  "/qfrc_gr_opt.npy", qfrc_gr_opt)
-        print('saving kin + dyn data...')
-        qpos_gt = np.array(qpos_gt[1:])[:, 0]
-        qvel_gt = np.array(qvel_gt)[:, 0]
-        bfrc_gr_opt = np.array(bfrc_gr_opt[1:])[:, 0]
-        qfrc_gr_opt = np.array(qfrc_gr_opt[1:])[:, 0]
-        M_rigid = np.array(M_rigid[1:])[:, 0]
-        tau_opt = np.array(tau_opt[1:])[:, 0]
-        gravcol = np.array(gravcol[1:])[:, 0]
-        print(f"qpos_gt.shape: {qpos_gt.shape}")
-        print(f"qvel_gt.shape: {qvel_gt.shape}")
-        print(f"bfrc_gr_opt.shape: {bfrc_gr_opt.shape}")
-        print(f"qfrc_gr_opt.shape: {qfrc_gr_opt.shape}")
-        print(f"M_rigid.shape: {M_rigid.shape}")
-        print(f"tau_opt.shape: {tau_opt.shape}")
-        print(f"gravcol.shape: {gravcol.shape}")
-        h5path = f"{self.save_base_path}/data+seq_name={self.seq_name}.h5"
-        with h5py.File(h5path, "w") as h5file:
-            # save data
-            h5file.create_dataset(
-                "qpos_gt", data = qpos_gt)
-            h5file.create_dataset(
-                "qvel_gt", data = qvel_gt)
-            h5file.create_dataset(
-                "bfrc_gr_opt", data = bfrc_gr_opt)
-            h5file.create_dataset(
-                "qfrc_gr_opt", data = qfrc_gr_opt)
-            h5file.create_dataset(
-                "M_rigid", data = M_rigid)
-            h5file.create_dataset(
-                "tau_opt", data = tau_opt)
-            h5file.create_dataset(
-                "gravcol", data = gravcol)
-        print(f"Kin + dyn data saved to {h5path}")
         print('Done.')
         return 0
  

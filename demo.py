@@ -348,20 +348,21 @@ class InferencePipeline():
                     # print(f"Minv_tau_dt_iter's norm: {torch.norm(Minv_tau_dt_iter)}")
                     # print(f"velocity loss (in cycle): {loss_iter}")
 
-                    qdot0 = qdot.detach().clone()
-                    q0 = AU.angle_normalize_batch_cpu(q.detach().clone())
-                    
                     # NOTE: here we sample per-iteration data
                     # if iter == 0:
                     #     tau_special_iters.append(torch.flatten(tau_special).numpy())
                     tau_special_iters.append(tau_special.numpy())
                     qpos_opt_iters.append(q0.cpu().detach().numpy())
-                    qvel_opt_iters.append(qdot.numpy())
+                    qvel_opt_iters.append(qdot0.numpy())
                     bfrc_gr_opt_iters.append(lr_th_cons.cpu().detach().numpy())
                     qfrc_gr_opt_iters.append(gen_conF.numpy())
                     tau_opt_iters.append(qfrc_net.cpu().detach().numpy())
                     gravcol_iters.append(gcc.cpu().detach().numpy())
                     M_rigid_iters.append(M.cpu().detach().numpy())
+                    
+                    # update kinematic state
+                    qdot0 = qdot.detach().clone()
+                    q0 = AU.angle_normalize_batch_cpu(q.detach().clone())
                 
                 ### store the predictions ###             
                 p_3D_p = self.PyFK( [self.model_addresses["0"]], self.target_joint_ids,delta_t, torch.FloatTensor([0]) , q0) 
