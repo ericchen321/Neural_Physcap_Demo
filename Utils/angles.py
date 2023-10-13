@@ -24,7 +24,7 @@ class angle_util():
 
     def quat_shortest_path(self,quat):
         n_b = quat.size()[0]
-        masks = torch.ones(n_b)#.cuda()
+        masks = torch.ones(n_b).to(quat.device)
         larger_id = torch.flatten(torch.nonzero((quat[:, 0] < 0) * masks).detach())
         quat[larger_id] = self.q_conj(quat[larger_id].view(larger_id.shape[0], 4))
         return quat
@@ -35,7 +35,8 @@ class angle_util():
         larger_id = torch.flatten(torch.nonzero((quat[:, 0] < 0).float() * masks).detach())
         quat[larger_id] = self.q_conj(quat[larger_id].view(larger_id.shape[0], 4))
         return quat
-    def qmul(self,q, r):
+    
+    def qmul(self, q, r):
         """
         Multiply quaternion(s) q with quaternion(s) r.
         Expects two equally-sized tensors of shape (*, 4), where * denotes any number of dimensions.
@@ -56,7 +57,9 @@ class angle_util():
         return torch.stack((w, x, y, z), dim=1).view(original_shape)
 
     def target_correction_batch(self,error):
-        masks = torch.ones(error.size()[0], error.size()[1], )#.cuda()
+        masks = torch.ones(
+            error.size()[0], error.size()[1],
+            device=error.device)
 
         larger_id = torch.nonzero((error > math.pi) * masks).detach()
         smaller_id = torch.nonzero((error < - math.pi) * masks).detach()
@@ -74,17 +77,22 @@ class angle_util():
         error[larger_id[:, 0], larger_id[:, 1]] = error[larger_id[:, 0], larger_id[:, 1]] - 2 * math.pi
         error[smaller_id[:, 0], smaller_id[:, 1]] = error[smaller_id[:, 0], smaller_id[:, 1]] + 2 * math.pi
         return error
-    def angle_normalize_batch(self,q_all):
-
-        q=q_all[:,3:-1].clone()
-        masks = torch.ones(q.size()[0], q.size()[1])#.cuda()
+    
+    def angle_normalize_batch(self, q_all):
+        q = q_all[:,3:-1].clone()
+        masks = torch.ones(
+            q.size()[0], q.size()[1], device=q_all.device)
         mod = torch.remainder(q, 2 * math.pi)
-        larger_id = torch.nonzero((mod > math.pi) * masks).detach()#.cuda()
-        smaller_id = torch.nonzero((mod <= math.pi) * masks).detach()#.cuda()
+        larger_id = torch.nonzero(
+            (mod > math.pi) * masks).detach().to(q_all.device)
+        smaller_id = torch.nonzero(
+            (mod <= math.pi) * masks).detach().to(q_all.device)
         q[larger_id[:, 0], larger_id[:, 1]] = mod[larger_id[:, 0], larger_id[:, 1]] - 2 * math.pi
         q[smaller_id[:, 0], smaller_id[:, 1]] = mod[smaller_id[:, 0], smaller_id[:, 1]]
-        q_all[:, 3:-1]=q.clone()
-        return q_all
+        q_all_new = q_all.clone()
+        q_all_new[:, 3:-1] = q.clone()
+        return q_all_new
+    
     def angle_normalize_batch_cpu(self,q_all):
 
         q=q_all[:,3:-1].clone()
@@ -96,6 +104,7 @@ class angle_util():
         q[smaller_id[:, 0], smaller_id[:, 1]] = mod[smaller_id[:, 0], smaller_id[:, 1]]
         q_all[:, 3:-1]=q.clone()
         return q_all
+    
     def angle_normalize_art_batch(self,q_art):
 
         #q=q_all[:,3:-1].clone()
@@ -174,10 +183,17 @@ class angle_util():
         return torch.stack((w, x, y, z), dim=1)
 #            angvel_quat = np.array([0,qdot[3],qdot[4],qdot[5]])
 
-    def get_angvel_quat(self,qdot):
-        return torch.stack((torch.zeros(len(qdot))  ,qdot[:,0],qdot[:,1],qdot[:,2]), dim=1)#.cuda()
+    def get_angvel_quat(self, qdot):
+        return torch.stack(
+            (torch.zeros(len(qdot), device=qdot.device),
+             qdot[:,0],
+             qdot[:,1],
+             qdot[:,2]),
+            dim = 1)
+    
     def get_angvel_quat_cpu(self,qdot):
         return torch.stack((torch.zeros(len(qdot)) ,qdot[:,0],qdot[:,1],qdot[:,2]), dim=1)
+    
     def quat_conj(self,q):
         return torch.FloatTensor([q[0],-q[1],-q[2],-q[3]])
     

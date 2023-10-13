@@ -121,18 +121,9 @@ class VelocityLoss:
         # predict qvel_diff
         qvel_diff_pred = torch.bmm(impl_gt, M_pred_inv.transpose(1, 2)).view(
             num_sims, num_steps-1, self.dof)
-        # print(f"impl_gt.shape: {impl_gt.shape}")
-        # qvel_diff_pred = torch.bmm(
-        #     M_pred_inv,
-        #     impl_gt.transpose(1,2).view(num_sims, self.dof, num_steps-1))
         
         # compute MSE loss over qvel difference
         # NOTE: we treat data at each step as a sample
-        # print(f"norm of qvel_diff_gt, averaged over sim/step: {torch.norm(qvel_diff_gt, dim=(1,2)).mean()}")
-        # print(f"norm of qvel_diff_pred, averaged over sim/step: {torch.norm(qvel_diff_pred, dim=(1,2)).mean()}")
-        # print(f"norm of M_pred_inv, averaged over sim/step: {torch.norm(M_pred_inv, dim=(1,2)).mean()}")
-        # while True:
-        #     pass
         loss = mse_loss(
             qvel_diff_pred.reshape(num_sims*(num_steps-1), self.dof),
             qvel_diff_gt.reshape(num_sims*(num_steps-1), self.dof),
@@ -141,4 +132,45 @@ class VelocityLoss:
         return {
             "qvel_diff_gt": qvel_diff_gt,
             "qvel_diff_pred": qvel_diff_pred,
+            "loss": loss}
+    
+
+class MAELoss:
+    r"""
+    Loss that penalizes Euclidean distance between GT and predicted joint
+    pose across samples and steps.
+    """
+
+    def __init__(
+        self,
+        dof: int = 2,
+        reduction: str = 'mean') -> None:
+        self.dof = dof
+        self.reduction = reduction
+
+    def loss(
+        self,
+        qpos_pred: torch.Tensor,
+        qpos_gt: torch.Tensor) -> Dict[str, torch.Tensor]:
+        r"""
+        Paremters:
+            qpos_pred: predicted joint pose (num_sims, num_steps, dof)
+            qpos_gt: GT joint pose (num_sims, num_steps, dof)
+
+        Return:
+            A dictionary containing:
+            - loss: MSE loss across samples and steps
+        """
+        # precondition checks
+        assert qpos_pred.shape == qpos_gt.shape
+        num_sims, num_steps, dof = qpos_pred.shape
+        assert dof == self.dof
+
+        # compute MSE loss
+        loss = mse_loss(
+            qpos_pred.reshape(num_sims*num_steps, self.dof),
+            qpos_gt.reshape(num_sims*num_steps, self.dof),
+            reduction=self.reduction)
+
+        return {
             "loss": loss}

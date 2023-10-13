@@ -11,7 +11,7 @@ import h5py
 
 class PerMotionDataName(str, Enum):
     r"""
-    Name of each data in the per-motion dataset.
+    Name of each data in a per-motion dataset.
     """
     QPOS_GT = "qpos_gt"
     QVEL_GT = "qvel_gt"
@@ -27,6 +27,13 @@ class PerMotionDataName(str, Enum):
     M_RIGID_ITERS = "M_rigid_iters"
     TAU_OPT_ITERS = "tau_opt_iters"
     GRAVCOL_ITERS = "gravcol_iters"
+
+
+class PerMotionExtendedDataName(str, Enum):
+    r"""
+    Name of each data only in an extended per-motion dataset.
+    """
+    P_2DS_GT = "p_2ds_gt"
 
 
 class PerMotionDataset(Dataset):
@@ -104,19 +111,19 @@ class PerMotionDataset(Dataset):
             - tau_opt: optimized generalized joint torques (full_seq_length, dof)
             - gravcol: generalized gravity + Coriolis force (full_seq_length, dof)
             - qpos_opt_iters: optimized generalized positions at each iteration
-                (num_dyn_cycles, dof+1)
+                (num_dc_iters, dof+1)
             - qvel_opt_iters: optimized generalized velocities at each iteration
-                (num_dyn_cycles, dof)
+                (num_dc_iters, dof)
             - bfrc_gr_opt_iters: optimized Cartesian GRF/M at each iteration
-                (num_dyn_cycles, 12)
+                (num_dc_iters, 12)
             - qfrc_gr_opt_iters: optimized generalized GRF/M at each iteration
-                (num_dyn_cycles, dof)
+                (num_dc_iters, dof)
             - M_rigid_iters: rigid-body mass matrix at each iteration
-                (num_dyn_cycles, dof, dof)
+                (num_dc_iters, dof, dof)
             - tau_opt_iters: optimized generalized joint torques at each iteration
-                (num_dyn_cycles, dof)
+                (num_dc_iters, dof)
             - gravcol_iters: generalized gravity + Coriolis force at each iteration
-                (num_dyn_cycles, dof)
+                (num_dc_iters, dof)
         """
         ret_dict = {}
         with h5py.File(h5_path, "r") as data:
@@ -132,3 +139,46 @@ class PerMotionDataset(Dataset):
         for data_name in self.data_names:
             ret_dict[data_name] = self.data[data_name][idx]
         return ret_dict
+    
+
+class PerMotionExtendedDataset(PerMotionDataset):
+    r"""
+    Extended per-motion dataset with 2D joint positions.
+    """
+
+    def __init__(
+        self,
+        h5_path: str,
+        p_2ds_path: str,
+        temporal_window: int,
+        seq_length: int) -> None:
+        super().__init__(
+            h5_path, seq_length, False)
+        self.temporal_window = temporal_window
+        
+        # load 2d joint positions
+        self.data_names.append(PerMotionExtendedDataName.P_2DS_GT)
+        p_2ds_gt = torch.from_numpy(np.load(p_2ds_path)).float()
+        # then split into sequences
+        self.data[PerMotionExtendedDataName.P_2DS_GT] = torch.stack(
+            torch.split(p_2ds_gt[self.temporal_window:], seq_length, dim=0)[:-1], dim=0)
+        print(f"shape of p_2ds_gt: {self.data[PerMotionExtendedDataName.P_2DS_GT].shape}")
+        
+    def __len__(self) -> int:
+        return self.data[self.data_names[0]].shape[0]
+    
+    def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
+        ret_dict = {}
+        for data_name in self.data_names:
+            ret_dict[data_name] = self.data[data_name][idx]
+        return ret_dict
+    
+
+if __name__ == "__main__":
+    extended_dataset = PerMotionExtendedDataset(
+        "data_logging/demo/sample_dance+t=2023-10-11-12-52-04/data+seq_name=sample_dance.h5",
+        "sample_data/sample_dance.npy",
+        10,
+        125)
+    for k, v in extended_dataset[0].items():
+        print(k, v.shape, v.dtype)

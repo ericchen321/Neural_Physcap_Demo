@@ -1,4 +1,6 @@
 # Author: Guanxiong
+# Train inertia estimator offline, i.e. on a single motion divided into clips,
+# while not being a part of the dynamic cycle
 
 
 import argparse

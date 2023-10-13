@@ -22,6 +22,8 @@ class GRFNet(nn.Module):
         x = self.LReLU3(self.fc3(x))
         conF = 10 * self.fc_conF(x)
         return conF
+
+
 class DynamicNetwork(nn.Module):
     def __init__(self, input_dim,output_dim,offset_coef):
         super(DynamicNetwork, self).__init__()
@@ -45,6 +47,7 @@ class DynamicNetwork(nn.Module):
         offset =self.offset_coef * self.tanh(self.fc_offset(x))
        
         return gains,offset
+
 
 class TransCan3Dkeys2(nn.Module):
     def __init__(self, in_channels=74, num_features=256, out_channels=44, time_window=10, num_blocks=2):
@@ -336,6 +339,7 @@ class TargetPoseNetArtOri(nn.Module):
         x_art = math.pi*self.tanh(self.out(x))
         x_ori =  self.outOri(x)
         return x_art,x_ori
+
 
 class TargetPoseNetArt(nn.Module):
     def __init__(self, in_channels=74, num_features=256, out_channels=44, time_window=10, num_blocks=2):

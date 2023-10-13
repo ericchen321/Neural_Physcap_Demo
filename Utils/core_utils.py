@@ -10,6 +10,8 @@ AU = angle_util()
 import numpy as np
 import warnings
 warnings.filterwarnings("ignore")
+from typing import Union, List
+
 
 class CoreUtils():
     def __init__(self,q_size,delta_t):
@@ -39,18 +41,35 @@ class CoreUtils():
  
         self.label_mat_base_cpu=torch.eye(6).view(2,3,6) 
 
-    def get_contact_jacobis6D(self,model, q, ids):
+    def get_contact_jacobis6D(
+        self,
+        model,
+        q: np.ndarray,
+        ids: List[int],
+        device: str = "cuda"):
         jacobis = np.zeros((len(q), len(ids), 6, model.qdot_size))  
         for batch in range(len(q)):
             for i, id in enumerate(ids):
-                rbdl.CalcPointJacobian6D(model, q[batch].flatten().astype(float), id, np.array([0., 0., 0.]), jacobis[batch][i])
-        jacobis = torch.FloatTensor(jacobis).view(len(q), -1, model.qdot_size)#.cuda()
+                rbdl.CalcPointJacobian6D(
+                    model,
+                    q[batch].flatten().astype(float),
+                    id,
+                    np.array([0., 0., 0.]),
+                    jacobis[batch][i])
+        jacobis = torch.FloatTensor(jacobis).view(
+            len(q), -1, model.qdot_size).to(device)
         return jacobis
+    
     def get_contact_jacobis6D_cpu(self,model, q, ids):
         jacobis = np.zeros((len(q), len(ids), 6, model.qdot_size)) 
         for batch in range(len(q)):
             for i, id in enumerate(ids):
-                rbdl.CalcPointJacobian6D(model, q[batch].flatten().astype(float), id, np.array([0., 0., 0.]), jacobis[batch][i])
+                rbdl.CalcPointJacobian6D(
+                    model,
+                    q[batch].flatten().astype(float),
+                    id,
+                    np.array([0., 0., 0.]),
+                    jacobis[batch][i])
         jacobis = torch.FloatTensor(jacobis).view(len(q), -1, model.qdot_size)##.cuda()
         return jacobis
 
@@ -80,6 +99,7 @@ class CoreUtils():
         errors_trans=self.get_trans_errors(ref_trans,trans0)
         errors_art=self.get_art_errors_cpu(ref_art,art0)
         return errors_trans,errors_ori,errors_art
+    
     def get_ori_errors_cpu(self,ref_quat,quat0):
         errors_ori = AU.qmul(ref_quat, AU.q_conj(quat0))
         errors_ori = AU.quat_shortest_path_cpu(errors_ori)
@@ -87,6 +107,7 @@ class CoreUtils():
         errors_ori = errors_ori / l
         errors_ori = errors_ori[:, 1:]
         return errors_ori
+    
     def get_ori_errors(self,ref_quat,quat0):
         errors_ori = AU.qmul(ref_quat, AU.q_conj(quat0))
         errors_ori = AU.quat_shortest_path(errors_ori)
@@ -99,10 +120,10 @@ class CoreUtils():
         return ref_trans - trans0
 
     def get_art_errors(self,ref_art,art0):
-        return AU.target_correction_batch(ref_art -art0)
+        return AU.target_correction_batch(ref_art-art0)
 
     def get_art_errors_cpu(self,ref_art,art0):
-        return AU.target_correction_batch_cpu(ref_art -art0)
+        return AU.target_correction_batch_cpu(ref_art-art0)
   
     def get_tau(self,errors_trans,errors_ori,errors_art,qdot0,limit, small_z=1):
         tau_art = 324 * errors_art - 20 * qdot0[:, 6:]
@@ -123,13 +144,23 @@ class CoreUtils():
         return tau
  
 
-    def get_neural_development(self, errors_trans, errors_ori, errors_art, qdot0,gains, offset,limit_art,small_z = 0):
+    def get_neural_development(
+        self,
+        errors_trans, errors_ori, errors_art,
+        qdot0,
+        gains,
+        offset,
+        limit_art,
+        art_only = 0,
+        small_z = 0):
  
         tau_art = 324 * gains[:,6:]* errors_art - 20 * qdot0[:, 6:]+ offset[:,6:]
-        tau_ori = 6000 * gains[:,3:6]*errors_ori - 536 * qdot0[:, 3:6]+ offset[:,3:6]
-        #tau_ori = 6000 * errors_ori - 536 * qdot0[:, 3:6]#+ offset[:,3:6]
-        tau_trans = 15000 * gains[:,:3]* errors_trans - 678 * qdot0[:, :3]+ offset[:,:3]
-        #tau_trans = 15000 * errors_trans - 678 * qdot0[:, :3]
+        if art_only:
+            tau_ori = 6000 * errors_ori - 536 * qdot0[:, 3:6]
+            tau_trans = 15000 * errors_trans - 678 * qdot0[:, :3]
+        else:
+            tau_ori = 6000 * gains[:, 3:6] * errors_ori - 536 * qdot0[:, 3:6] + offset[:, 3:6]
+            tau_trans = 15000 * gains[:,:3]* errors_trans - 678 * qdot0[:, :3]+ offset[:,:3]
         if small_z:
             tau_trans[:,2] = 3000 * errors_trans[:,2] - 2000 * qdot0[:,2]
         #tau = torch.cat((tau_trans, tau_ori, tau_art), 1)
@@ -145,7 +176,15 @@ class CoreUtils():
         tau[:, 6 + 19] = 0
         return tau
 
-    def get_neural_development_cpu(self, errors_trans, errors_ori, errors_art, qdot0,gains, offset,limit_art,art_only=0,small_z = 0):
+    def get_neural_development_cpu(
+        self,
+        errors_trans, errors_ori, errors_art,
+        qdot0,
+        gains,
+        offset,
+        limit_art,
+        art_only=0,
+        small_z = 0):
  
         tau_art = 324 * gains[:,6:]* errors_art - 20 * qdot0[:, 6:]+ offset[:,6:]
         if art_only:
@@ -169,35 +208,47 @@ class CoreUtils():
         tau[:, 6 + 19] = 0
         return tau 
  
-    def pose_update_quat(self,qdot0,q0,quat0,delta_t,qddot,speed_limit,th_zero = 0):
-        n_b,_=q0.shape
+    def pose_update_quat(
+        self,
+        qdot0: torch.Tensor,
+        q0: torch.Tensor,
+        quat0: torch.Tensor,
+        delta_t: float,
+        qddot: torch.Tensor,
+        speed_limit: float,
+        th_zero = False):
+        n_b, _ = q0.shape
+        
+        # NOTE: constrained-update new qdot under constraints
         qdot = qdot0 + delta_t * qddot
         qdot = torch.clamp(qdot, -speed_limit, speed_limit)
-        #print(qdot)
         if th_zero:
-            qdot[:,6+9]=0
-            qdot[:,6+8]=0
-            qdot[:,6+18]=0
-            qdot[:,6+19]=0
-            qdot[:,-1]=0
+            qdot[:,6+9] = 0.0
+            qdot[:,6+8] = 0.0
+            qdot[:,6+18] = 0.0
+            qdot[:,6+19] = 0.0
+            qdot[:,-1] = 0.0
+        
+        # NOTE: constrained-update new root translation and joint angles
         q_trans = q0[:, :3] + delta_t * qdot[:, :3]
-        q_trans= torch.clamp(q_trans, -50, 50)
+        q_trans= torch.clamp(q_trans, -50.0, 50.0)
         q_art = q0[:, 6:-1] + delta_t * qdot[:, 6:]
-
         if th_zero:
-            q_art[:,9]=0
-            q_art[:,8]=0
-            q_art[:,18]=0
-            q_art[:,19]=0
-
+            q_art[:,9] = 0.0
+            q_art[:,8] = 0.0
+            q_art[:,18] = 0.0
+            q_art[:,19] = 0.0
+        
+        # compute new root orientation
         angvel_quat = AU.get_angvel_quat(qdot[:, 3:6])
-        quat = quat0.detach() + delta_t * AU.qmul(angvel_quat, quat0.detach()) / 2
+        quat = quat0 + delta_t * AU.qmul(angvel_quat, quat0) / 2
         loss_unit = (quat.pow(2).sum(1) - 1).pow(2).mean()
-
         l = torch.sqrt(quat.pow(2).sum(1)).view(n_b, 1)
         quat = quat / l
+        
+        # assemble new q
         q = torch.cat((q_trans, quat[:, 1:], q_art, quat[:, 0].view(-1, 1)), 1)
-        return quat,q,qdot,loss_unit
+        return quat, q, qdot, loss_unit
 
     def pose_update_quat_cpu(self,qdot0,q0,quat0,delta_t,qddot,speed_limit,th_zero = 0):
         n_b, _ = q0.shape
