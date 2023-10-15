@@ -105,6 +105,8 @@ def define_inertia_estimator(
                 [512]*2
         else:
             raise ValueError("Unsupported MLP depth")
+    elif "mlp" in model_specs and "widths" in model_specs["mlp"]:
+        mlp_widths = model_specs["mlp"]["widths"]
     
     # instantiate NN
     if network == "UnconNetBase":

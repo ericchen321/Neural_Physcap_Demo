@@ -19,7 +19,8 @@ from torch.utils.data import DataLoader
 from inertia_models import define_inertia_estimator
 from inertia_losses import (
     LossName,
-    MAELoss)
+    ReconLossA,
+    ReconLossB)
 from Utils.angles import angle_util 
 import Utils.misc as ut
 import Utils.phys as ppf
@@ -180,12 +181,21 @@ class Trainer():
             dataset_train,
             batch_size = self.batch_size,
             shuffle = True,
+            drop_last=True,
             num_workers = 0)
         
         # define the loss class
         self.loss_name = loss_name
-        if self.loss_name == LossName.MAE_LOSS:
-            self.loss_cls = MAELoss(self.dof+1, reduction="mean")
+        if self.loss_name == LossName.RECON_LOSS_A:
+            loss_weights = {
+                "weight_root_pos": 10.0,
+                "weight_root_rot": 10.0,
+                "weight_poses": 1.0}
+            self.loss_cls = ReconLossA(
+                loss_weights,
+                dof = self.dof+1)
+        elif self.loss_name == LossName.RECON_LOSS_B:
+            self.loss_cls = ReconLossB(self.dof+1, reduction="mean")
         else:
             raise ValueError("Invalid loss name")
         
@@ -211,9 +221,8 @@ class Trainer():
         # pre-compute some kinematic data
         self.RT = RT
         self.Rs = torch.FloatTensor(
-            self.RT[:3, :3]).to(self.device).view(self.batch_size, 3, 3)
-        self.P = torch.FloatTensor(K[:3]).to(self.device)
-        self.P_tensor = self.get_P_tensor(self.batch_size, self.target_joint_ids, self.P)
+            self.RT[:3, :3]).to(self.device).expand(self.batch_size, -1, -1).view(
+                self.batch_size, 3, 3)
 
         # set up TB writer
         self.writer = SummaryWriter(log_dir = tb_dir_path)
@@ -290,6 +299,14 @@ class Trainer():
             
             # simulate sequences in a batch altogether
             loss_per_step = []
+            qpos_pred = torch.zeros(
+                self.batch_size, self.seq_length-self.temporal_window, self.dof+1,
+                dtype=torch.float32,
+                device=self.device)
+            qvel_pred = torch.zeros(
+                self.batch_size, self.seq_length-self.temporal_window, self.dof,
+                dtype=torch.float32,
+                device=self.device)
             for sim_step_idx in range(self.temporal_window, self.seq_length):
                 # get data per step
                 data_train_per_step: Dict[str, torch.Tensor] = {}
@@ -328,19 +345,25 @@ class Trainer():
                 # with torch.no_grad(): 
                 #     pred_labels, _ = self.contact_label_estimation(input_rr)
 
-                # define q0, qdot0 before the dynamic cycle
-                q0 = q_tar.view(self.batch_size, self.dof + 1)
-                # NOTE: since we're not inferring target poses on the fly,
-                # we can obtain qdot0 from the ground truth
-                # qdot0 = torch.zeros(
-                #     self.batch_size, self.dof,
-                #     dtype=torch.float32, device=self.device)
-                qdot0 = data_train_per_step[
-                    PerMotionDataName.QVEL_GT].squeeze(-2).view(self.batch_size, self.dof)
-                # if sim_step_idx == self.temporal_window:
-                #     pre_lr_th_cons = torch.zeros(
-                #         self.batch_size, 4*3,
-                #         dtype=q0.dtype, device=self.device)
+                if sim_step_idx == self.temporal_window:
+                    # define q0, qdot0 before the dynamic cycle
+                    q0 = q_tar.view(self.batch_size, self.dof + 1)
+                    # NOTE: since we're not inferring target poses on the fly,
+                    # we can obtain qdot0 from the ground truth
+                    # qdot0 = torch.zeros(
+                    #     self.batch_size, self.dof,
+                    #     dtype=torch.float32, device=self.device)
+                    qdot0 = data_train_per_step[
+                        PerMotionDataName.QVEL_GT].squeeze(-2).view(self.batch_size, self.dof)
+                    # if sim_step_idx == self.temporal_window:
+                    #     pre_lr_th_cons = torch.zeros(
+                    #         self.batch_size, 4*3,
+                    #         dtype=q0.dtype, device=self.device)
+                else:
+                    pass
+                    # q0 = q_tar.view(self.batch_size, self.dof + 1)
+                    # qdot0 = data_train_per_step[
+                    #     PerMotionDataName.QVEL_GT].squeeze(-2).view(self.batch_size, self.dof)
 
                 # run the dynamic cycle
                 tau_per_cycle = []
@@ -456,18 +479,6 @@ class Trainer():
 
                     # register tau
                     tau_per_cycle.append(tau)
-
-                # compute loss and backprop, after `num_dyn_cycles` dynamic cycles
-                qpos_pred = q0.unsqueeze(dim=-2)
-                qpos_gt = data_train_per_step[PerMotionDataName.QPOS_GT]
-                loss_dict = self.loss_cls.loss(
-                    qpos_pred,
-                    qpos_gt)
-                loss = loss_dict["loss"]
-                if self.inertia_estimator_specs["network"] != "CRBA":
-                    loss.backward()
-                    self.optimizer.step()
-                loss_per_step.append(loss.item())
                 
                 # compute 3D joint positions (?)           
                 # p_3D_p = self.PyFK( 
@@ -476,9 +487,21 @@ class Trainer():
                 #     self.num_dyn_cycles * self.delta_t,
                 #     torch.FloatTensor([0]),
                 #     q0)
+
+                # register predictions
+                qpos_pred[:, sim_step_idx-self.temporal_window] = q0
+                qvel_pred[:, sim_step_idx-self.temporal_window] = qdot0
                 
-            # compute average loss over sim steps
-            loss_avg_steps = torch.mean(
-                torch.FloatTensor(loss_per_step))
-            losses.append(loss_avg_steps.item())
-            self.writer.add_scalar("train/loss", loss_avg_steps, train_step_idx)
+            # compute loss and backprop, after an entire sequence ends
+            qpos_gt = data_train_per_batch[PerMotionDataName.QPOS_GT][:, 1:].view(
+                self.batch_size, self.seq_length-self.temporal_window, self.dof+1)
+            loss_dict = self.loss_cls.loss(
+                qpos_pred,
+                qpos_gt)
+            loss = loss_dict["loss"]
+            if self.inertia_estimator_specs["network"] != "CRBA":
+                # loss.backward(retain_graph=True)
+                loss.backward()
+                self.optimizer.step()
+            loss_per_step.append(loss.item())
+            self.writer.add_scalar("train/loss", loss, train_step_idx)
