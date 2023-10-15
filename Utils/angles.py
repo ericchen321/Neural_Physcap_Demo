@@ -5,6 +5,7 @@ import math
 class angle_util():
     def pysinc(self,x):
         return torch.sin(math.pi * x) / (math.pi * x)
+    
     def expmap_to_quaternion(self,e):
         """
         Convert axis-angle rotations (aka exponential maps) to quaternions.
@@ -129,6 +130,7 @@ class angle_util():
         q[smaller_id[:, 0], smaller_id[:, 1]] = mod[smaller_id[:, 0], smaller_id[:, 1]]
         q_all[:, 3:]=q.clone()
         return q_all
+    
     def angle_normalize_batch_exp(self,q_all):
 
         q=q_all[:,3:].clone()
@@ -156,11 +158,10 @@ class angle_util():
         v = v / v_mag
         return v
 
-
     def normalize_vector(self,v):
         batch = v.shape[0]
         v_mag = torch.sqrt(v.pow(2).sum(1))  # batch
-        v_mag = torch.max(v_mag, torch.autograd.Variable(torch.FloatTensor([1e-8])))#.cuda())
+        v_mag = torch.max(v_mag, torch.autograd.Variable(torch.FloatTensor([1e-8]).to(v.device)))
         v_mag = v_mag.view(batch, 1).expand(batch, v.shape[1])
         v = v / v_mag
         return v
@@ -271,11 +272,7 @@ class angle_util():
         matrix = torch.cat((row0.view(batch, 1, 3), row1.view(batch, 1, 3), row2.view(batch, 1, 3)), 1)  # batch*3*3
 
         return matrix#.detach()  # .numpy()
-
-
-
-
-
+    
     def compute_rotation_matrix_from_quaternion_prep(self, quaternion):
 
         batch = quaternion.shape[0]
@@ -316,7 +313,6 @@ class angle_util():
 
         return out
 
-
     def compute_rotation_matrix_from_ortho6d(self,poses):
         x_raw = poses[:, 0:3]  # batch*3
         y_raw = poses[:, 3:6]  # batch*3
@@ -332,12 +328,10 @@ class angle_util():
         matrix = torch.cat((x, y, z), 2)  # batch*3*3
         return matrix
 
-
     def compute_rotation_matrix_loss(self,gt_rotation_matrix, predict_rotation_matrix):
         loss_function = torch.nn.MSELoss()
         loss = loss_function(predict_rotation_matrix, gt_rotation_matrix)
         return loss
-
 
     def get_44_rotation_matrix_from_33_rotation_matrix(self,m):
         batch = m.shape[0]
@@ -350,9 +344,7 @@ class angle_util():
         col4[:, 3, 0] = col4[:, 3, 0] + 1
 
         out = torch.cat((m43, col4), 2)  # batch*4*4
-
         return out
-
 
     def get_44_rotation_matrix_from_33_rotation_matrix_prep(self,m):
         batch = m.shape[0]
@@ -366,9 +358,7 @@ class angle_util():
 
         out = torch.cat((m43, col4), 2)  # batch*4*4
         out = out.view(4, 4).detach().cpu().numpy()
-
         return out
-
 
     def compute_euler_angles_from_rotation_matrices(self,rotation_matrices):
         batch = rotation_matrices.shape[0]
@@ -389,9 +379,7 @@ class angle_util():
         out_euler[:, 0] = x * (1 - singular) + xs * singular
         out_euler[:, 1] = y * (1 - singular) + ys * singular
         out_euler[:, 2] = z * (1 - singular) + zs * singular
-
         return out_euler
-
 
     def compute_quaternions_from_rotation_matrices(self,matrices):
         batch = matrices.shape[0]
