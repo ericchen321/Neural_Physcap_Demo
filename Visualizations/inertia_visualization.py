@@ -9,14 +9,6 @@ import seaborn as sns
 import os
 
 
-def store_grad(grad, storing_list):
-    r"""
-    Hook function for storing gradient tensor in a list. Should be
-    used with register_hook().
-    """
-    storing_list.append(grad.clone())
-
-
 class NPhysCapDoFSemantics:
     r"""
     What each DoF in the dataset stands for.

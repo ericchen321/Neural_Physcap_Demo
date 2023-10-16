@@ -52,6 +52,10 @@ if __name__ == "__main__":
     seq_length = config["seq_length"]
     M_est_specs = config["inertia_estimate"]
     predict_M_inv = M_est_specs["predict_M_inv"]
+    if "pretrained_weights" in M_est_specs:
+        pretrained_weights_specs = M_est_specs["pretrained_weights"]
+    else:
+        pretrained_weights_specs = None
     num_train_steps = M_est_specs["num_train_steps"]
     loss_specs = M_est_specs["loss"]
     optimizer_specs = M_est_specs["optimizer"]
@@ -127,6 +131,7 @@ if __name__ == "__main__":
             model_name,
             model_specs,
             predict_M_inv,
+            pretrained_weights_specs,
             loss_specs,
             optimizer_specs,
             img_width, img_height,
@@ -143,3 +148,4 @@ if __name__ == "__main__":
             num_train_steps = num_train_steps,
             device = device)
         trainer.train_and_validate()
+        trainer.save_model()

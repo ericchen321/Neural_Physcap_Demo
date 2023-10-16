@@ -29,8 +29,24 @@ from Utils.initializer import InitializerConsistentHumanoid2
 from Utils.inertia_utils import move_dict_to_device
 from torch.nn.utils import clip_grad_norm_
 from torch.utils.tensorboard import SummaryWriter
-from Visualizations.inertia_visualization import store_grad
 from typing import Dict, List
+
+
+def grad_hook(
+    grad,
+    storing_list,
+    clip_grad: bool = False,
+    grad_thresh: float = 4.0):
+    r"""
+    Hook function for storing gradient tensor in a list. Should be
+    used with register_hook().
+    """
+    if clip_grad:
+        grad_new = torch.clamp(grad, -grad_thresh, grad_thresh)
+        storing_list.append(grad_new.clone())
+        return grad_new
+    else:
+        storing_list.append(grad.clone())
 
 
 class Trainer():
@@ -49,6 +65,7 @@ class Trainer():
         inertia_model_name,
         inertia_model_specs,
         predict_M_inv,
+        pretrained_weights_specs,
         loss_specs,
         optimizer_specs,
         w, h, K, RT,
@@ -176,18 +193,23 @@ class Trainer():
             device=self.device)
         
         # load pretrained inertia estimator
-        if self.inertia_estimator_specs['network'] != "CRBA":
+        if self.inertia_estimator_specs['network'] != "CRBA" and \
+            pretrained_weights_specs is not None:
             model_weights_path = os.path.join(
                 "data_logging/",
                 "train_inertia_estimator_offline/",
-                "config_e05+sample_dance+t=2023-10-11-15-29-35/",
+                pretrained_weights_specs["experiment_name"],
                 f"{self.inertia_model_name}/",
                 f"{self.inertia_estimator_specs['network']}.pt")
-            self.inertia_estimator.load_state_dict(
-                torch.load(
-                    model_weights_path, map_location=torch.device('cpu')),
-                strict = True)
-        print(f"Loaded {self.inertia_model_name} model for inertia estimation")
+            try:
+                self.inertia_estimator.load_state_dict(
+                    torch.load(
+                        model_weights_path, map_location=torch.device(self.device)),
+                    strict = True)
+                print(f"Loaded {self.inertia_model_name} model for inertia estimation")
+            except FileNotFoundError:
+                raise FileNotFoundError(
+                    f"Could not find {self.inertia_model_name} model for inertia estimation")
 
         # setup custom pytorch functions including the Physics model 
         self.PyFK = ppf.PyForwardKinematicsQuaternion().apply 
@@ -542,10 +564,12 @@ class Trainer():
                 #         lambda grad: print(f"norm of M's grad: {torch.norm(grad)}"))
                 if self.predict_M_inv:
                     M_inv.register_hook(
-                        lambda grad: store_grad(grad, inertia_grads))
+                        lambda grad: grad_hook(
+                            grad, inertia_grads, False))
                 else:
                     M.register_hook(
-                        lambda grad: store_grad(grad, inertia_grads))
+                        lambda grad: grad_hook(
+                            grad, inertia_grads, False))
                 loss.backward()
                 named_params = self.inertia_estimator.named_parameters()
                 for name, params in named_params:
@@ -566,8 +590,12 @@ class Trainer():
             self.writer.add_scalar(
                 "train_loss/loss_poses", loss_dict["loss_poses"], train_step_idx)
             if len(inertia_grads) > 0:
+                if self.predict_M_inv:
+                    scalar_name = "train_grads/M_inv_grads_norm"
+                else:
+                    scalar_name = "train_grads/M_grads_norm"
                 self.writer.add_scalar(
-                    "train_grads/M_grads_norm",
+                    scalar_name,
                     torch.norm(
                         torch.sum(torch.stack(inertia_grads), dim=0)).cpu().detach().numpy(),
                     train_step_idx)
@@ -584,3 +612,12 @@ class Trainer():
                     f"train_grads/{name}_grads_mean",
                     grad_mean,
                     train_step_idx)
+                
+    def save_model(self):
+        if self.inertia_estimator_specs['network'] != "CRBA":
+            os.makedirs(self.save_base_path, exist_ok=True)
+            nn_weights_path = f"{self.save_base_path}/{self.inertia_estimator_specs['network']}.pt"
+            torch.save(
+                self.inertia_estimator.state_dict(),
+                nn_weights_path)
+            print(f"Saved inertia estimator to {nn_weights_path}")
