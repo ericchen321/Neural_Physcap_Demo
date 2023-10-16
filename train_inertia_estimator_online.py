@@ -53,7 +53,7 @@ if __name__ == "__main__":
     M_est_specs = config["inertia_estimate"]
     predict_M_inv = M_est_specs["predict_M_inv"]
     num_train_steps = M_est_specs["num_train_steps"]
-    loss_name = M_est_specs["loss"]["name"]
+    loss_specs = M_est_specs["loss"]
     optimizer_specs = M_est_specs["optimizer"]
     batch_size = M_est_specs["batch_size"]
     steps_til_val = M_est_specs["steps_til_val"]
@@ -127,7 +127,7 @@ if __name__ == "__main__":
             model_name,
             model_specs,
             predict_M_inv,
-            loss_name,
+            loss_specs,
             optimizer_specs,
             img_width, img_height,
             K, RT,

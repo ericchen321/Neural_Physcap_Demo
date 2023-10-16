@@ -182,12 +182,15 @@ class ReconLossA:
         # compute cosine distance on root orientation
         # NOTE: We use Eq. 7 from Eric Gartner's 2022 paper (except that
         # here we apply it only to root rot)
+        eps = 1e-9
         root_rot_gt = self.angle_util.normalize_vector(
             qpos_gt[:, :, [46, 3, 4, 5]].view(-1, 4)).view(-1, 4)
         root_rot_pred = self.angle_util.normalize_vector(
             qpos_pred[:, :, [46, 3, 4, 5]].view(-1, 4)).view(-1, 4)
-        root_rot_diff = torch.acos(torch.abs(torch.sum(
-            root_rot_gt * root_rot_pred, dim=-1))).view(num_sims, num_steps)
+        root_rot_diff = torch.acos(
+            torch.abs(
+                torch.sum(root_rot_gt * root_rot_pred, dim=-1)).clamp(
+                    -1.0+eps, 1.0-eps)).view(num_sims, num_steps)
         root_rot_diff_sums = torch.sum(root_rot_diff, dim=-1).view(num_sims,)
         loss_root_rot = torch.mean(root_rot_diff_sums)
 
@@ -205,24 +208,29 @@ class ReconLossA:
         # while True:
         #     pass
 
-        if torch.any(torch.isnan(loss_root_pos)):
-            print("loss_root_pos is nan")
-            while True:
-                pass
-        if torch.any(torch.isnan(loss_root_rot)):
-            print("loss_root_rot is nan")
-            while True:
-                pass
-        if torch.any(torch.isnan(loss_poses)):
-            print("loss_poses is nan")
-            while True:
-                pass
+        # if torch.any(torch.isnan(loss_root_pos)):
+        #     print("loss_root_pos is nan")
+        #     while True:
+        #         pass
+        # if torch.any(torch.isnan(loss_root_rot)):
+        #     print("loss_root_rot is nan")
+        #     print(torch.abs(torch.sum(
+        #         root_rot_gt * root_rot_pred, dim=-1)))
+        #     while True:
+        #         pass
+        # if torch.any(torch.isnan(loss_poses)):
+        #     print("loss_poses is nan")
+        #     while True:
+        #         pass
         
         loss = self.weight_root_pos * loss_root_pos + \
             self.weight_root_rot * loss_root_rot + \
             self.weight_poses * loss_poses
 
         return {
+            "loss_root_pos": loss_root_pos,
+            "loss_root_rot": loss_root_rot,
+            "loss_poses": loss_poses,
             "loss": loss}
     
 class ReconLossB:
