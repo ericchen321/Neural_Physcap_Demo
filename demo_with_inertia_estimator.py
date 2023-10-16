@@ -37,11 +37,11 @@ class InferencePipeline():
         urdf_path,
         net_path,
         data_path,
+        load_base_path,
         save_base_path,
         inertia_model_name,
         inertia_model_specs,
         predict_M_inv,
-        train_experiment_name,
         w,h,K,RT,
         neural_PD=1,
         grad_descent=0,
@@ -122,16 +122,13 @@ class InferencePipeline():
         # load pretrained weights if the estimator is not CRBA
         if self.inertia_estimator_specs['network'] != "CRBA":
             model_weights_path = os.path.join(
-                "data_logging/",
-                "train_inertia_estimator_offline/",
-                f"{train_experiment_name}/",
-                f"{self.inertia_model_name}/",
+                load_base_path,
                 f"{self.inertia_estimator_specs['network']}.pt")
             self.inertia_estimator.load_state_dict(
                 torch.load(
                     model_weights_path, map_location=torch.device('cpu')),
                 strict = True)
-        print(f"Loaded {self.inertia_model_name} model for inertia estimation")
+            print(f"Loaded {self.inertia_model_name} model for inertia estimation")
 
 
         ### setup custom pytorch functions including the Physics model 
@@ -316,31 +313,31 @@ class InferencePipeline():
                 trans_tar = trans_tar.cpu()
                 q_tar = q_tar.cpu()
 
+                # extract M or M_inv
+                # M = ut.get_mass_mat_cpu(
+                #     self.model, q0.detach().clone().cpu().numpy())
+                # NOTE: here we use our inertia estimator instead of get_mass_mat_cpu()
+                model_input = {
+                    "qpos": q0.clone().unsqueeze(1),
+                    "qvel": qdot0.clone().unsqueeze(1)}
+                model_output = self.inertia_estimator(model_input)
+                if self.predict_M_inv:
+                    if self.inertia_estimator_specs["network"] == "CRBA":
+                        M = model_output["inertia"].clone().to("cpu")
+                        M_inv = torch.inverse(M).clone()
+                        M_inv = ut.clean_massMat(M_inv)
+                    else:
+                        M_inv = model_output["inertia"].clone().to("cpu")
+                        M = torch.inverse(M_inv).clone()
+                else:
+                    M = model_output["inertia"].clone().to("cpu")
+                    M_inv = torch.inverse(M).clone()
+                    if self.inertia_estimator_specs["network"] == "CRBA":
+                        M_inv = ut.clean_massMat(M_inv)
+                
                 ### Dynamic Cycle ###
                 for iter in range(self.n_iter):
                     ### Compute dynamic quantitites and pose errors ###
-                    # M = ut.get_mass_mat_cpu(
-                    #     self.model, q0.detach().clone().cpu().numpy())
-                    # NOTE: here we use our inertia estimator instead of get_mass_mat_cpu()
-                    model_input = {
-                        "qpos": q0.clone().unsqueeze(1),
-                        "qvel": qdot0.clone().unsqueeze(1)}
-                    model_output = self.inertia_estimator(model_input)
-                    
-                    # extract M or M_inv
-                    if self.predict_M_inv:
-                        if self.inertia_estimator_specs["network"] == "CRBA":
-                            M = model_output["inertia"].clone().to("cpu")
-                            M_inv = torch.inverse(M).clone()
-                            M_inv = ut.clean_massMat(M_inv)
-                        else:
-                            M_inv = model_output["inertia"].clone().to("cpu")
-                            M = torch.inverse(M_inv).clone()
-                    else:
-                        M = model_output["inertia"].clone().to("cpu")
-                        M_inv = torch.inverse(M).clone()
-                        if self.inertia_estimator_specs["network"] == "CRBA":
-                            M_inv = ut.clean_massMat(M_inv)
                     
                     J = CU.get_contact_jacobis6D_cpu(self.model, q0.numpy(), [self.rbdl_dic['left_ankle'], self.rbdl_dic['right_ankle']])  # ankles
 
@@ -501,6 +498,7 @@ if __name__ == "__main__":
     parser.add_argument('--floor_position_path', default="./sample_data/sample_floor_position.npy")
     parser.add_argument('--cam_params_known', type=int, default=0)
     parser.add_argument('--cam_params_path', default="./sample_data/sample_cam_params.npy")
+    parser.add_argument('--load_base_path', default="./data_logging/")
     parser.add_argument('--save_base_path', default="./data_logging/")
     parser.add_argument('--urdf_path', default="./URDF/manual.urdf")
     parser.add_argument('--temporal_window', type=int, default=10)
@@ -547,17 +545,32 @@ if __name__ == "__main__":
             inertia_est_config = yaml.safe_load(stream)
         except yaml.YAMLError as exc:
             print(exc)
-    estimation_specs = inertia_est_config["estimation_specs"]
-    predict_M_inv = estimation_specs["loss"]["name"] == LossName.VELOCITY_LOSS
-    
+    # check if it's online/offline estimate
+    if "online" in args.inertia_est_config:
+        train_type = "online"
+    elif "offline" in args.inertia_est_config:
+        train_type = "offline"
+    else:
+        raise ValueError("Invalid training type")
+    print(f"train_type: {train_type}")
+    if train_type == "offline":
+        estimation_specs = inertia_est_config["estimation_specs"]
+    elif train_type == "online":
+        estimation_specs = inertia_est_config["inertia_estimate"]
+    predict_M_inv = estimation_specs["predict_M_inv"]
     config_name = inertia_est_config["config_name"]
+    load_base_path = "".join(
+        [f"{args.load_base_path}/",
+            f"train_inertia_estimator_{train_type}/",
+            f"{args.train_experiment_name}/"])            
     save_base_path = "".join(
         [f"{args.save_base_path}/",
          "demo_with_inertia_estimator/",
          f"{config_name}+{input_basename}+t={time_curr}"])
 
     for model_name, model_specs in estimation_specs["models"].items():
-        # define save path per model
+        # define load + save path per model
+        load_path_per_model = "".join([load_base_path, "/", model_name])
         save_path_per_model = "".join([save_base_path, "/", model_name])
 
         # evaluate
@@ -565,11 +578,11 @@ if __name__ == "__main__":
             urdf_path,
             net_path,
             args.input_path,
+            load_path_per_model,
             save_path_per_model,
             model_name,
             model_specs,
             predict_M_inv,
-            args.train_experiment_name,
             w,h,K,RT,
             neural_PD=1,
             grad_descent=grad_descent, 
