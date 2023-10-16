@@ -317,6 +317,7 @@ class InferencePipeline():
                 # M = ut.get_mass_mat_cpu(
                 #     self.model, q0.detach().clone().cpu().numpy())
                 # NOTE: here we use our inertia estimator instead of get_mass_mat_cpu()
+                # NOTE: estimate M outside dyn cycle
                 model_input = {
                     "qpos": q0.clone().unsqueeze(1),
                     "qvel": qdot0.clone().unsqueeze(1)}
