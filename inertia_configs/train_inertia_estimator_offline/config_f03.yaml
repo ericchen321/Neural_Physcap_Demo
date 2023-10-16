@@ -1,0 +1,54 @@
+# general
+config_name: "config_f03"
+h5_path: "data_logging/demo/sample_dance+t=2023-10-11-12-52-04/data+seq_name=sample_dance.h5"
+seq_length: 2
+
+# data use:
+data_use:
+  use_per_cycle_data: True
+  force_terms:
+    tau: 1.0
+
+# estimation
+estimation_specs:
+  num_train_steps: 800
+  loss:
+    name: "impulse_loss"
+  optimizer:
+    name: "Adam"
+    params:
+      learning_rate: 2.5e-4
+      amsgrad: True
+  batch_size: 1024
+  steps_til_val: 100
+  models:
+    nn+SPDNet+Eig+ReLU:
+      arch: "nn"
+      network: "SPDNetBase"
+      mlp:
+        widths: [8192, 4096, 2048]
+      spd_layer:
+        type: "eigen"
+        min_value: 1.0e-10
+        positivity: "ReLU"
+      activation: "lrelu"
+      normalize_inputs: False
+    nn+SymmNet:
+      network: "SymmNetBase"
+      mlp:
+        widths: [8192, 4096, 2048]
+      activation: "lrelu"
+      normalize_inputs: False
+    CRBA:
+      arch: "nn"
+      network: "CRBA"
+      urdf_path: "URDF/manual.urdf"
+
+# visualization
+visual_specs:
+  plot_dir: "plots/"
+  tb_dir: "tb/"
+
+# data saving
+data_save_specs:
+  data_save_dir: "data_logging/"

@@ -1,5 +1,5 @@
 # general
-config_name: "config_testing"
+config_name: "config_testing_inv"
 h5_path: "data_logging/demo/sample_dance+t=2023-10-11-12-52-04/data+seq_name=sample_dance.h5"
 pretrained_nw_path: "trained_models/"
 seq_length: 10
@@ -26,9 +26,9 @@ kinematics:
 
 # inertia estimation
 inertia_estimate:
-  predict_M_inv: False
+  predict_M_inv: True
   pretrained_weights:
-    experiment_name: "config_f03+sample_dance+t=2023-10-16-15-19-32"
+    experiment_name: "config_f04+sample_dance+t=2023-10-16-15-19-16"
   num_train_steps: 400
   loss:
     name: "recon_loss_a"
