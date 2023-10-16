@@ -216,12 +216,14 @@ class CoreUtils():
         delta_t: float,
         qddot: torch.Tensor,
         speed_limit: float,
-        th_zero = False):
+        th_zero: bool = False,
+        disable_clamp: bool = False):
         n_b, _ = q0.shape
         
         # NOTE: constrained-update new qdot under constraints
         qdot = qdot0 + delta_t * qddot
-        qdot = torch.clamp(qdot, -speed_limit, speed_limit)
+        if not disable_clamp:
+            qdot = torch.clamp(qdot, -speed_limit, speed_limit)
         if th_zero:
             qdot[:,6+9] = 0.0
             qdot[:,6+8] = 0.0
@@ -231,7 +233,8 @@ class CoreUtils():
         
         # NOTE: constrained-update new root translation and joint angles
         q_trans = q0[:, :3] + delta_t * qdot[:, :3]
-        q_trans= torch.clamp(q_trans, -50.0, 50.0)
+        if not disable_clamp:
+            q_trans= torch.clamp(q_trans, -50.0, 50.0)
         q_art = q0[:, 6:-1] + delta_t * qdot[:, 6:]
         if th_zero:
             q_art[:,9] = 0.0
