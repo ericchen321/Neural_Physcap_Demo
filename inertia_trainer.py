@@ -32,17 +32,29 @@ from torch.utils.tensorboard import SummaryWriter
 from typing import Dict, List
 
 
-def grad_hook(
+def store_and_clip_grad(
     grad,
     storing_list,
     clip_grad: bool = False,
     grad_thresh: float = 4.0):
-    r"""
-    Hook function for storing gradient tensor in a list. Should be
-    used with register_hook().
-    """
     if clip_grad:
         grad_new = torch.clamp(grad, -grad_thresh, grad_thresh)
+        storing_list.append(grad_new.clone())
+        return grad_new
+    else:
+        storing_list.append(grad.clone())
+
+
+def store_and_prune_grad(
+    grad,
+    storing_list,
+    prune_grad: bool = False,
+    grad_thresh: float = 4.0):
+    if prune_grad:
+        if torch.isnan(grad).any():
+            print("nan in grad")
+        grad_new = torch.nan_to_num(
+            grad, nan=0.0, posinf=grad_thresh, neginf=-grad_thresh)
         storing_list.append(grad_new.clone())
         return grad_new
     else:
@@ -563,20 +575,23 @@ class Trainer():
                 # M.register_hook(
                 #         lambda grad: print(f"norm of M's grad: {torch.norm(grad)}"))
                 if self.predict_M_inv:
-                    M_inv.register_hook(
-                        lambda grad: grad_hook(
-                            grad, inertia_grads, False))
+                    inertia_hook = M_inv.register_hook(
+                        lambda grad: store_and_prune_grad(
+                            grad, inertia_grads, True, self.grad_thresh))
                 else:
-                    M.register_hook(
-                        lambda grad: grad_hook(
-                            grad, inertia_grads, False))
+                    inertia_hook = M.register_hook(
+                        lambda grad: store_and_prune_grad(
+                            grad, inertia_grads, True, self.grad_thresh))
                 loss.backward()
+                inertia_hook.remove()
+                # clip grads
+                clip_grad_norm_(self.inertia_estimator.parameters(), self.grad_thresh)
+                # record grads
                 named_params = self.inertia_estimator.named_parameters()
                 for name, params in named_params:
                     assert params.grad is not None
                     if params.requires_grad:
                         weights_grads[name].append(params.grad)
-                clip_grad_norm_(self.inertia_estimator.parameters(), self.grad_thresh)
                 self.optimizer.step()
             loss_per_step.append(loss.item())
 
