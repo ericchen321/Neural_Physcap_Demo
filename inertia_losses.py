@@ -151,6 +151,7 @@ class ReconLossA:
         self.weight_root_pos = hparams["weight_root_pos"]
         self.weight_root_rot = hparams["weight_root_rot"]
         self.weight_poses = hparams["weight_poses"]
+        self.pose_loss_norm = hparams["pose_loss_norm"]
         self.angle_util = angle_util()
 
     def loss(
@@ -179,49 +180,32 @@ class ReconLossA:
         root_pos_diff_sums = torch.sum(root_pos_diff_norm, dim=-1).view(num_sims,)
         loss_root_pos = torch.mean(root_pos_diff_sums)
         
-        # compute cosine distance on root orientation
-        # NOTE: We use Eq. 7 from Eric Gartner's 2022 paper (except that
-        # here we apply it only to root rot)
-        eps = 1e-9
+        # compute loss on root orientation
+        # we adapt implementation from compute_ori_loss_quat_quat()
         root_rot_gt = self.angle_util.normalize_vector(
             qpos_gt[:, :, [46, 3, 4, 5]].view(-1, 4)).view(-1, 4)
         root_rot_pred = self.angle_util.normalize_vector(
             qpos_pred[:, :, [46, 3, 4, 5]].view(-1, 4)).view(-1, 4)
-        root_rot_diff = torch.acos(
-            torch.abs(
-                torch.sum(root_rot_gt * root_rot_pred, dim=-1)).clamp(
-                    -1.0+eps, 1.0-eps)).view(num_sims, num_steps)
-        root_rot_diff_sums = torch.sum(root_rot_diff, dim=-1).view(num_sims,)
+        root_rot_gt_mat = self.angle_util.compute_rotation_matrix_from_quaternion(
+            root_rot_gt)
+        root_rot_gt_mat = self.angle_util.get_44_rotation_matrix_from_33_rotation_matrix(
+            root_rot_gt_mat).view(num_sims, num_steps, 4, 4)
+        root_rot_pred_mat = self.angle_util.compute_rotation_matrix_from_quaternion(
+            root_rot_pred)
+        root_rot_pred_mat = self.angle_util.get_44_rotation_matrix_from_33_rotation_matrix(
+            root_rot_pred_mat).view(num_sims, num_steps, 4, 4)
+        root_rot_diff_norm = torch.norm(
+            root_rot_pred_mat - root_rot_gt_mat, p="fro", dim=(-2, -1)).view(num_sims, num_steps)
+        root_rot_diff_sums = torch.sum(root_rot_diff_norm, dim=-1).view(num_sims,)
         loss_root_rot = torch.mean(root_rot_diff_sums)
 
-        # compute L1 loss on angles
+        # compute loss on joint angles
         poses_gt = qpos_gt[:, :, 6:-1].view(num_sims, num_steps, 40)
         poses_pred = qpos_pred[:, :, 6:-1].view(num_sims, num_steps, 40)
         poss_diff_norms = torch.norm(
-            poses_pred - poses_gt, p=1, dim=-1).view(num_sims, num_steps)
+            poses_pred - poses_gt, p=self.pose_loss_norm, dim=-1).view(num_sims, num_steps)
         poss_diff_sums = torch.sum(poss_diff_norms, dim=-1).view(num_sims,)
         loss_poses = torch.mean(poss_diff_sums)
-
-        # print(f"loss_root_pos: {loss_root_pos}")
-        # print(f"loss_root_rot: {loss_root_rot}")
-        # print(f"loss_poses: {loss_poses}")
-        # while True:
-        #     pass
-
-        # if torch.any(torch.isnan(loss_root_pos)):
-        #     print("loss_root_pos is nan")
-        #     while True:
-        #         pass
-        # if torch.any(torch.isnan(loss_root_rot)):
-        #     print("loss_root_rot is nan")
-        #     print(torch.abs(torch.sum(
-        #         root_rot_gt * root_rot_pred, dim=-1)))
-        #     while True:
-        #         pass
-        # if torch.any(torch.isnan(loss_poses)):
-        #     print("loss_poses is nan")
-        #     while True:
-        #         pass
         
         loss = self.weight_root_pos * loss_root_pos + \
             self.weight_root_rot * loss_root_rot + \
