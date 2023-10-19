@@ -1,6 +1,8 @@
 import torch
 import numpy as np
 import math
+from torch.nn.functional import normalize
+
 
 class angle_util():
     def pysinc(self,x):
@@ -158,13 +160,22 @@ class angle_util():
         v = v / v_mag
         return v
 
-    def normalize_vector(self,v):
-        batch = v.shape[0]
-        v_mag = torch.sqrt(v.pow(2).sum(1))  # batch
-        v_mag = torch.max(v_mag, torch.autograd.Variable(torch.FloatTensor([1e-8]).to(v.device)))
-        v_mag = v_mag.view(batch, 1).expand(batch, v.shape[1])
-        v = v / v_mag
-        return v
+    def normalize_vector(self, v, eps=1.0e-12):
+        # batch = v.shape[0]
+        # v_mag = torch.sqrt(v.pow(2).sum(1))  # batch
+        # v_mag = torch.max(v_mag, torch.autograd.Variable(torch.FloatTensor([1e-8]).to(v.device)))
+        # v_mag = v_mag.view(batch, 1).expand(batch, v.shape[1])
+        # v = v / v_mag
+        # return v
+        
+        # v_mag = torch.linalg.vector_norm(v, ord=2, dim=1, keepdim=True)
+        # v_mag = torch.maximum(
+        #     v_mag, torch.FloatTensor([thresh]).to(v.device))
+        # v = v / v_mag
+        # return v
+    
+        v_new = normalize(v, p=2, dim=-1, eps=eps)
+        return v_new
 
     def quat_bullet2general(self,q):
         return torch.FloatTensor([q[3],q[0],q[1],q[2]])
@@ -333,14 +344,14 @@ class angle_util():
         loss = loss_function(predict_rotation_matrix, gt_rotation_matrix)
         return loss
 
-    def get_44_rotation_matrix_from_33_rotation_matrix(self,m):
+    def get_44_rotation_matrix_from_33_rotation_matrix(self, m):
         batch = m.shape[0]
 
-        row4 = torch.autograd.Variable(torch.zeros(batch, 1, 3))#.cuda())
+        row4 = torch.autograd.Variable(torch.zeros(batch, 1, 3)).to(m.device)
 
         m43 = torch.cat((m, row4), 1)  # batch*4,3
 
-        col4 = torch.autograd.Variable(torch.zeros(batch, 4, 1))#.cuda())
+        col4 = torch.autograd.Variable(torch.zeros(batch, 4, 1)).to(m.device)
         col4[:, 3, 0] = col4[:, 3, 0] + 1
 
         out = torch.cat((m43, col4), 2)  # batch*4*4
