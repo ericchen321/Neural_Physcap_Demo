@@ -12,6 +12,7 @@ data_use:
 
 # estimation
 estimation_specs:
+  predict_M_inv: False
   num_train_steps: 6000
   loss:
     name: "impulse_loss"

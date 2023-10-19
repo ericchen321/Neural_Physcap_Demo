@@ -76,6 +76,7 @@ if __name__ == "__main__":
     force_terms = data_use_opts["force_terms"]
     assert len(force_terms) > 0
     estimation_specs = config["estimation_specs"]
+    predict_M_inv = estimation_specs["predict_M_inv"]
     num_train_steps = estimation_specs["num_train_steps"]
     loss_name = estimation_specs["loss"]["name"]
     optimizer_specs = estimation_specs["optimizer"]
@@ -226,7 +227,7 @@ if __name__ == "__main__":
             model_output_train = model(model_input_train)
             # NOTE: if we're using velocity loss, for CRBA, should take M's inverse
             # for fair comparison
-            if network == "CRBA" and loss_name == LossName.VELOCITY_LOSS:
+            if network == "CRBA" and predict_M_inv:
                 m_inv = torch.inverse(model_output_train["inertia"])
                 m_inv = clean_massMat(m_inv)
                 model_output_train["inertia"] = m_inv
@@ -266,7 +267,7 @@ if __name__ == "__main__":
                 model.eval()
                 with torch.no_grad():
                     model_output_val = model(model_input_val)
-                if network == "CRBA" and loss_name == LossName.VELOCITY_LOSS:
+                if network == "CRBA" and predict_M_inv:
                     m_inv = torch.inverse(model_output_val["inertia"])
                     m_inv = clean_massMat(m_inv)
                     model_output_val["inertia"] = m_inv
@@ -301,7 +302,7 @@ if __name__ == "__main__":
         model.eval()
         with torch.no_grad():
             model_output_test = model(model_input_test)
-        if network == "CRBA" and loss_name == LossName.VELOCITY_LOSS:
+        if network == "CRBA" and predict_M_inv:
             m_inv = torch.inverse(model_output_test["inertia"])
             m_inv = clean_massMat(m_inv)
             model_output_test["inertia"] = m_inv
@@ -321,12 +322,10 @@ if __name__ == "__main__":
 
     # visualize results
     print(f"Visualizing...")
-    if loss_name == LossName.IMPULSE_LOSS:
-        matrix_name = "inertia"
-    elif loss_name == LossName.VELOCITY_LOSS:
+    if predict_M_inv:
         matrix_name = "inertia_inverse"
     else:
-        raise ValueError("Invalid loss name")
+        matrix_name = "inertia"
     M_visualizer = InertiaMatrixVisualizer(
         matrix_name)
     Ms = np.zeros(

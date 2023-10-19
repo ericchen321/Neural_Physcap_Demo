@@ -11,9 +11,10 @@ data_use:
 
 # estimation
 estimation_specs:
+  predict_M_inv: False
   num_train_steps: 10
   loss:
-    name: "velocity_loss"
+    name: "impulse_loss"
   optimizer:
     name: "Adam"
     params:
@@ -27,21 +28,21 @@ estimation_specs:
       network: "CRBA"
       urdf_path: "URDF/manual.urdf"
     nn+SymmNet:
-      network: "SymmNetQVel"
+      network: "SymmNetBase"
       mlp:
         depth: 8
       activation: "lrelu"
       normalize_inputs: False
     nn+UnconNet:
       arch: "nn"
-      network: "UnconNetQVel"
+      network: "UnconNetBase"
       mlp:
         depth: 8
       activation: "lrelu"
       normalize_inputs: False
     nn+SPDNet+Eig+ReLU:
       arch: "nn"
-      network: "SPDNetQVel"
+      network: "SPDNetBase"
       mlp:
         depth: 8
       spd_layer:

@@ -1,5 +1,5 @@
 # general
-config_name: "config_f06"
+config_name: "config_testing_inv"
 h5_path: "data_logging/demo/sample_dance+t=2023-10-11-12-52-04/data+seq_name=sample_dance.h5"
 seq_length: 2
 
@@ -12,7 +12,7 @@ data_use:
 # estimation
 estimation_specs:
   predict_M_inv: True
-  num_train_steps: 4000
+  num_train_steps: 10
   loss:
     name: "velocity_loss"
   optimizer:
@@ -20,30 +20,37 @@ estimation_specs:
     params:
       learning_rate: 2.5e-4
       amsgrad: True
-  batch_size: 1024
-  steps_til_val: 100
+  batch_size: 1
+  steps_til_val: 10
   models:
+    CRBA:
+      arch: "nn"
+      network: "CRBA"
+      urdf_path: "URDF/manual.urdf"
+    nn+SymmNet:
+      network: "SymmNetBase"
+      mlp:
+        depth: 8
+      activation: "lrelu"
+      normalize_inputs: False
+    nn+UnconNet:
+      arch: "nn"
+      network: "UnconNetBase"
+      mlp:
+        depth: 8
+      activation: "lrelu"
+      normalize_inputs: False
     nn+SPDNet+Eig+ReLU:
       arch: "nn"
       network: "SPDNetBase"
       mlp:
-        widths: [8192, 4096, 2048]
+        depth: 8
       spd_layer:
         type: "eigen"
         min_value: 1.0e-10
         positivity: "ReLU"
       activation: "lrelu"
       normalize_inputs: False
-    nn+SymmNet:
-      network: "SymmNetBase"
-      mlp:
-        widths: [8192, 4096, 2048]
-      activation: "lrelu"
-      normalize_inputs: False
-    CRBA:
-      arch: "nn"
-      network: "CRBA"
-      urdf_path: "URDF/manual.urdf"
 
 # visualization
 visual_specs:

@@ -9,6 +9,7 @@ force_specs:
 
 # estimation
 estimation_specs:
+  predict_M_inv: True
   num_train_steps: 4000
   loss:
     name: "impulse_loss"
