@@ -36,6 +36,7 @@ inertia_estimate:
       weight_root_pos: 1.0
       weight_root_rot: 1.0
       weight_poses: 1.0
+      pose_loss_norm: 2
   optimizer:
     name: "Adam"
     params:
