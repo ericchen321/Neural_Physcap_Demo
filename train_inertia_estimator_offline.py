@@ -20,7 +20,9 @@ from inertia_models import define_inertia_estimator
 from inertia_losses import (
     LossName,
     ImpulseLoss,
-    VelocityLoss)
+    VelocityLoss,
+    RigidInertiaLoss,
+    RigidInertiaInvLoss)
 from tqdm import tqdm
 from Utils.misc import clean_massMat
 from Utils.inertia_utils import move_dict_to_device
@@ -108,17 +110,19 @@ if __name__ == "__main__":
         dt = n_iters * dt_dcycle
     device = args.device
 
-    # select names of kinematic data to use
+    # select names of kinematic/dyn data to use
     if use_per_cycle_data:
         qpos_name = PerMotionDataName.QPOS_OPT_ITERS
         qvel_name = PerMotionDataName.QVEL_OPT_ITERS
         tau_name = PerMotionDataName.TAU_OPT_ITERS
         gravcol_name = PerMotionDataName.GRAVCOL_ITERS
+        M_rigid_name = PerMotionDataName.M_RIGID_ITERS
     else:
         qpos_name = PerMotionDataName.QPOS_GT
         qvel_name = PerMotionDataName.QVEL_GT
         tau_name = PerMotionDataName.TAU_OPT
         gravcol_name = PerMotionDataName.GRAVCOL
+        M_rigid_name = PerMotionDataName.M_RIGID
     
     # load data
     dataset = PerMotionDataset(h5_path, seq_length, use_per_cycle_data)
@@ -165,9 +169,21 @@ if __name__ == "__main__":
         
         # define the loss class
         if loss_name == LossName.IMPULSE_LOSS:
+            assert not predict_M_inv
             loss_cls = ImpulseLoss(dof=dof, reduction="mean")
         elif loss_name == LossName.VELOCITY_LOSS:
+            assert predict_M_inv
             loss_cls = VelocityLoss(dof=dof, reduction="mean")
+        elif loss_name == LossName.RIGID_INERTIA_LOSS:
+            assert not predict_M_inv
+            loss_cls = RigidInertiaLoss(
+                dof=dof,
+                reduction="mean")
+        elif loss_name == LossName.RIGID_INERTIA_INV_LOSS:
+            assert predict_M_inv
+            loss_cls = RigidInertiaInvLoss(
+                dof=dof,
+                reduction="mean")
         else:
             raise ValueError("Invalid loss name")
 
@@ -237,11 +253,16 @@ if __name__ == "__main__":
             for force_name_generic, force_scale in force_terms.items():
                 qfrc_net += force_scale * data_train_device[
                     parse_force_name(force_name_generic, use_per_cycle_data)]
-            loss_dict = loss_cls.loss(
-                model_output_train["inertia"],
-                model_input_train["qvel"],
-                qfrc_net,
-                torch.FloatTensor([dt]).to(device))
+            if loss_name in [LossName.IMPULSE_LOSS, LossName.VELOCITY_LOSS]:
+                loss_dict = loss_cls.loss(
+                    model_output_train["inertia"],
+                    model_input_train["qvel"],
+                    qfrc_net,
+                    torch.FloatTensor([dt]).to(device))
+            elif loss_name in [LossName.RIGID_INERTIA_LOSS, LossName.RIGID_INERTIA_INV_LOSS]:
+                loss_dict = loss_cls.loss(
+                    model_output_train["inertia"],
+                    data_train_device[M_rigid_name][:, 0])
             loss = loss_dict["loss"]
             if network != "CRBA":
                 loss.backward()
@@ -277,11 +298,16 @@ if __name__ == "__main__":
                 for force_name_generic, force_scale in force_terms.items():
                     qfrc_net += force_scale * data_val_device[
                         parse_force_name(force_name_generic, use_per_cycle_data)]
-                loss_dict = loss_cls.loss(
-                    model_output_val["inertia"],
-                    model_input_val["qvel"],
-                    qfrc_net,
-                    torch.FloatTensor([dt]).to(device))
+                if loss_name in [LossName.IMPULSE_LOSS, LossName.VELOCITY_LOSS]:
+                    loss_dict = loss_cls.loss(
+                        model_output_val["inertia"],
+                        model_input_val["qvel"],
+                        qfrc_net,
+                        torch.FloatTensor([dt]).to(device))
+                elif loss_name == LossName.RIGID_INERTIA_LOSS:
+                    loss_dict = loss_cls.loss(
+                        model_output_val["inertia"],
+                        data_val_device[M_rigid_name][:, 0])
                 loss_val = loss_dict["loss"]
                 writer.add_scalar("val/loss", loss, step_idx)
 

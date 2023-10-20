@@ -7,13 +7,15 @@ from torch.nn.functional import mse_loss, normalize
 from typing import Dict
 from enum import Enum
 from Utils.angles import angle_util
+from Utils.misc import clean_massMat
 
 
 class LossName(str, Enum):
     IMPULSE_LOSS = "impulse_loss"
     NORMALIZED_IMPLUSE_LOSS = "normalized_impulse_loss"
     VELOCITY_LOSS = "velocity_loss"
-    SPD_LOSS = "spd_loss"
+    RIGID_INERTIA_LOSS = "rigid_inertia_loss"
+    RIGID_INERTIA_INV_LOSS = "rigid_inertia_inv_loss"
     RECON_LOSS_A = "recon_loss_a"
     RECON_LOSS_B = "recon_loss_b"
 
@@ -132,6 +134,77 @@ class VelocityLoss:
         return {
             "qvel_diff_gt": qvel_diff_gt,
             "qvel_diff_pred": qvel_diff_pred,
+            "loss": loss}
+    
+
+class RigidInertiaLoss:
+    r"""
+    Loss that penalizes Euclidean dist between GT rigid inertia and estimated effective inertia.
+    """
+    def __init__(
+        self,
+        dof = 2,
+        reduction: str = 'mean') -> None:
+        self.dof = dof
+        self.reduction = reduction
+
+    def loss(
+        self,
+        M_pred: torch.Tensor,
+        M_gt: torch.Tensor) -> Dict[str, torch.Tensor]:
+        r"""
+        Parameters:
+            M_pred: predicted mass matrix
+                (num_sims, dof, dof)
+            M_gt: GT rigid mass matrix
+                (num_sims, dof, dof)
+
+        Return:
+            A dictionary containing:
+            - loss: loss averaged across samples
+        """
+        loss = mse_loss(
+            M_pred,
+            M_gt,
+            reduction=self.reduction)
+        return {
+            "loss": loss}
+    
+
+class RigidInertiaInvLoss:
+    r"""
+    Loss that penalizes Euclidean dist between GT rigid inertia's inverse and estimated
+    effective inertia's inverse.
+    """
+    def __init__(
+        self,
+        dof = 2,
+        reduction: str = 'mean') -> None:
+        self.dof = dof
+        self.reduction = reduction
+
+    def loss(
+        self,
+        M_pred_inv: torch.Tensor,
+        M_gt: torch.Tensor) -> Dict[str, torch.Tensor]:
+        r"""
+        Parameters:
+            M_pred: predicted mass matrix
+                (num_sims, dof, dof)
+            M_gt: GT rigid mass matrix
+                (num_sims, dof, dof)
+
+        Return:
+            A dictionary containing:
+            - loss: loss averaged across samples
+        """
+        M_gt_inv = torch.inverse(M_gt)
+        M_gt_inv = clean_massMat(M_gt_inv)
+        loss = mse_loss(
+            M_pred_inv,
+            M_gt_inv,
+            reduction=self.reduction)
+        return {
             "loss": loss}
     
 
