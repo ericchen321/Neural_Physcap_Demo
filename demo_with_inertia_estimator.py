@@ -129,7 +129,7 @@ class InferencePipeline():
                     model_weights_path, map_location=torch.device('cpu')),
                 strict = True)
             print(f"Loaded {self.inertia_model_name} model for inertia estimation")
-
+        self.inertia_estimator.eval()
 
         ### setup custom pytorch functions including the Physics model 
         self.PyFK = ppf.PyForwardKinematicsQuaternion().apply 
@@ -330,11 +330,15 @@ class InferencePipeline():
                     else:
                         M_inv = model_output["inertia"].clone().to("cpu")
                         M = torch.inverse(M_inv).clone()
+                        # M_inv = ut.clean_massMat(M_inv)
                 else:
                     M = model_output["inertia"].clone().to("cpu")
                     M_inv = torch.inverse(M).clone()
                     if self.inertia_estimator_specs["network"] == "CRBA":
                         M_inv = ut.clean_massMat(M_inv)
+                    else:
+                        # M_inv = ut.clean_massMat(M_inv)
+                        pass
                 
                 ### Dynamic Cycle ###
                 for iter in range(self.n_iter):
@@ -390,9 +394,29 @@ class InferencePipeline():
                     #     qvel_diff/delta_t - qvel_diff_rigid/delta_t)
                     # print(f"qvel_diff_err_scaled: {qvel_diff_err_scaled}")
                     
-                    # inspect qddot error
+                    # inspect per-DC iter M error
+                    # M_err = mse_loss(M, M_rigid)
+                    # print(f"M_err: {M_err}")
+                    
+                    # inspect per-DC iter M_inv error
+                    # print(f"norm of M_inv: {torch.norm(M_inv)}")
+                    # print(f"norm of M_inv_rigid: {torch.norm(M_inv_rigid)}")
+                    # M_inv_err = mse_loss(M_inv, M_inv_rigid)
+                    # print(f"M_inv_err: {M_inv_err}")
+
+                    # inspect spectral norm of M_inv, M_inv_rigid
+                    # M_inv_spectral = torch.linalg.matrix_norm(M_inv, ord=2)
+                    # print(f"M_inv_spectral: {M_inv_spectral}")
+                    # M_inv_rigid_spectral = torch.linalg.matrix_norm(M_inv_rigid, ord=2)
+                    # print(f"M_inv_rigid_spectral: {M_inv_rigid_spectral}")
+                    
+                    # inspect norm of tau
+                    # tau_norm = torch.linalg.vector_norm(tau_special + gen_conF - gcc)
+                    # print(f"tau_norm: {tau_norm}")
+                    
+                    # inspect per-DC iter qddot error
                     # qddot_rigid = self.PyFD(tau_special + gen_conF - gcc, M_inv_rigid)
-                    # qddot_err = torch.norm(qddot - qddot_rigid)
+                    # qddot_err = mse_loss(qddot, qddot_rigid)
                     # print(f"qddot_err: {qddot_err}")
                     
                     # inspect per-iteration impulse loss
@@ -415,9 +439,6 @@ class InferencePipeline():
                     q0 = AU.angle_normalize_batch_cpu(q.detach().clone())
                     if iter == 0: all_tau.append(torch.flatten(tau_special).numpy())
                     all_iter_q.append(torch.flatten(q0).numpy())
-
-                # print(f"inspect per-frame pose error")
-                # print(f"||q_tar - q||: {torch.norm(q_tar - q0, 1)}")
                 
                 ### store the predictions ###             
                 p_3D_p = self.PyFK( [self.model_addresses["0"]], self.target_joint_ids,delta_t, torch.FloatTensor([0]) , q0) 
@@ -575,6 +596,7 @@ if __name__ == "__main__":
         save_path_per_model = "".join([save_base_path, "/", model_name])
 
         # evaluate
+        print(f"Evaluating {model_name}...")
         IPL = InferencePipeline(
             urdf_path,
             net_path,
