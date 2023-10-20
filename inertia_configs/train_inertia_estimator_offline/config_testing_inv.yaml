@@ -14,7 +14,8 @@ estimation_specs:
   predict_M_inv: True
   num_train_steps: 10
   loss:
-    name: "velocity_loss"
+    # name: "velocity_loss"
+    name: "rigid_inertia_inv_loss"
   optimizer:
     name: "Adam"
     params:
