@@ -142,7 +142,7 @@ def get_contact_wrench(
     r_ankle_F = r_toe_tau_lin_F + r_heel_tau_lin_F
 
     J = get_contact_jacobis6D(
-        model, qs_np, [rbdl_dic["left_ankle"], rbdl_dic["right_ankle"]])  # ankles
+        model, qs_np, [rbdl_dic["left_ankle"], rbdl_dic["right_ankle"]], device=device)  # ankles
     JT = torch.transpose(J, 1, 2)
     JT_l = JT[:, :, :6]
     JT_r = JT[:, :, 6:]

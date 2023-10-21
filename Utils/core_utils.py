@@ -253,10 +253,12 @@ class CoreUtils():
         q = torch.cat((q_trans, quat[:, 1:], q_art, quat[:, 0].view(-1, 1)), 1)
         return quat, q, qdot, loss_unit
 
-    def pose_update_quat_cpu(self,qdot0,q0,quat0,delta_t,qddot,speed_limit,th_zero = 0):
+    def pose_update_quat_cpu(
+        self,qdot0,q0,quat0,delta_t,qddot,speed_limit,th_zero = False, disable_clamp = False):
         n_b, _ = q0.shape
         qdot = qdot0 + delta_t * qddot
-        qdot = torch.clamp(qdot, -speed_limit, speed_limit)
+        if not disable_clamp:
+            qdot = torch.clamp(qdot, -speed_limit, speed_limit)
         # print(qdot)
         if th_zero:
             qdot[:, 6 + 9] = 0
@@ -265,7 +267,8 @@ class CoreUtils():
             qdot[:, 6 + 19] = 0
             qdot[:, -1] = 0
         q_trans = q0[:, :3] + delta_t * qdot[:, :3]
-        q_trans = torch.clamp(q_trans, -50, 50)
+        if not disable_clamp:
+            q_trans = torch.clamp(q_trans, -50, 50)
         q_art = q0[:, 6:-1] + delta_t * qdot[:, 6:]
 
         if th_zero:

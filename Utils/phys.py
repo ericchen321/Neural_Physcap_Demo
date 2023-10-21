@@ -15,8 +15,11 @@ class PyForwardKinematicsQuaternion(torch.autograd.Function):
         ctx.target_joint_ids= target_joint_ids
         ctx.models =  models 
         
-        coords = torch.tensor([[rbdl.CalcBodyToBaseCoordinates( models[batch],  ctx.q[batch].flatten().astype(float), i, np.zeros(3)) for i in  target_joint_ids] for batch in range(len(q))]).view(len(q), -1).float()
-        coords = coords#.cuda()
+        coords = torch.tensor(
+            [[rbdl.CalcBodyToBaseCoordinates(
+                models[batch],
+                ctx.q[batch].flatten().astype(float), i, np.zeros(3)) for i in  target_joint_ids] for batch in range(len(q))]).view(
+                    len(q), -1).float().to(q.device)
         return coords
 
     @staticmethod

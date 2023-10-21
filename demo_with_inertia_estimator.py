@@ -12,7 +12,7 @@ dir_path = os.path.dirname(os.path.realpath(__file__))
 import numpy as np
 from networks import TargetPoseNetArt,TargetPoseNetOri,ContactEstimationNetwork,TransCan3Dkeys,DynamicNetwork,GRFNet
 from inertia_models import define_inertia_estimator
-from inertia_losses import LossName
+from inertia_losses import LossName, ReconLossA
 from Utils.angles import angle_util 
 import Utils.misc as ut
 import Utils.phys as ppf
@@ -29,6 +29,7 @@ from datetime import datetime
 import h5py
 import yaml
 from torch.nn.functional import mse_loss
+from typing import List
 
 
 class InferencePipeline():
@@ -41,16 +42,18 @@ class InferencePipeline():
         save_base_path,
         inertia_model_name,
         inertia_model_specs,
+        loss_specs,
         predict_M_inv,
         w,h,K,RT,
         neural_PD=1,
-        grad_descent=0,
+        grad_descent=False,
         n_iter=6,
         temporal_window=10,
         con_thresh=0.01,
         limit=50,
         speed_limit=35,
-        seq_name=""):
+        seq_name="",
+        device = "cpu"):
 
         ### configuration ###
         self.w=w
@@ -65,6 +68,7 @@ class InferencePipeline():
         self.save_base_path=save_base_path 
         self.n_iter_GD=90
         self.seq_name = seq_name
+        self.device = device
 
         ### joint mapping ###
         self.openpose_dic2 = { "base": 7, "left_hip": 11, "left_knee": 12, "left_ankle": 13, "left_toe": 19, "right_hip": 8, "right_knee": 9, "right_ankle": 10, "right_toe": 22, "neck": 0, "head": 14, "left_shoulder": 4, "left_elbow": 5, "left_wrist": 6, "right_shoulder": 1, "right_elbow": 2,  "right_wrist": 3 }
@@ -84,20 +88,32 @@ class InferencePipeline():
         self.model_addresses = {"0": self.model, "1": self.model}
 
         ### build and load pretrained models ###
-        self.TempConvNetArt = TargetPoseNetArt(in_channels=32, num_features=1024, out_channels=40, num_blocks=4)#.cuda()
-        self.TempConvNetOri = TargetPoseNetOri(in_channels=32, num_features=1024, out_channels=4, num_blocks=4)#.cuda()
-        self.ConNet = ContactEstimationNetwork(in_channels=32, num_features=1024, out_channels=4, num_blocks=4)#.cuda()
-        self.TempConvNetTrans = TransCan3Dkeys(in_channels=32, num_features=1024, out_channels=3, num_blocks=4)#.cuda()
-        self.GRFNet = GRFNet(input_dim=577, output_dim=46 + 46 + 3 * 4)#.cuda()
-        self.DyNet = DynamicNetwork(input_dim=2302, output_dim=46, offset_coef=10)#.cuda()
+        self.TempConvNetArt = TargetPoseNetArt(
+            in_channels=32, num_features=1024, out_channels=40, num_blocks=4).to(self.device)
+        self.TempConvNetOri = TargetPoseNetOri(
+            in_channels=32, num_features=1024, out_channels=4, num_blocks=4).to(self.device)
+        self.ConNet = ContactEstimationNetwork(
+            in_channels=32, num_features=1024, out_channels=4, num_blocks=4).to(self.device)
+        self.TempConvNetTrans = TransCan3Dkeys(
+            in_channels=32, num_features=1024, out_channels=3, num_blocks=4).to(self.device)
+        self.GRFNet = GRFNet(
+            input_dim=577, output_dim=46 + 46 + 3 * 4).to(self.device)
+        self.DyNet = DynamicNetwork(
+            input_dim=2302, output_dim=46, offset_coef=10).to(self.device)
 
         if os.path.exists(net_path + "ArtNet.pkl"): 
-            self.TempConvNetArt.load_state_dict(torch.load(net_path + "ArtNet.pkl",  map_location=torch.device('cpu')))
-            self.TempConvNetOri.load_state_dict(torch.load(net_path + "OriNet.pkl", map_location=torch.device('cpu')))
-            self.ConNet.load_state_dict(torch.load(net_path + "ConNet.pkl", map_location=torch.device('cpu')))
-            self.GRFNet.load_state_dict(torch.load(net_path + "GRFNet.pkl" ,map_location=torch.device('cpu')))
-            self.TempConvNetTrans.load_state_dict(torch.load(net_path+"TransNet.pkl", map_location=torch.device('cpu')))
-            self.DyNet.load_state_dict(torch.load(net_path+ "DyNet.pkl", map_location=torch.device('cpu'))) 
+            self.TempConvNetArt.load_state_dict(
+                torch.load(net_path + "ArtNet.pkl",  map_location=torch.device(self.device)))
+            self.TempConvNetOri.load_state_dict(
+                torch.load(net_path + "OriNet.pkl", map_location=torch.device(self.device)))
+            self.ConNet.load_state_dict(
+                torch.load(net_path + "ConNet.pkl", map_location=torch.device(self.device)))
+            self.GRFNet.load_state_dict(
+                torch.load(net_path + "GRFNet.pkl" ,map_location=torch.device(self.device)))
+            self.TempConvNetTrans.load_state_dict(
+                torch.load(net_path+"TransNet.pkl", map_location=torch.device(self.device)))
+            self.DyNet.load_state_dict(
+                torch.load(net_path+ "DyNet.pkl", map_location=torch.device(self.device)))
         else:
             print('no trained model found!!!')
             sys.exit()
@@ -118,7 +134,7 @@ class InferencePipeline():
             self.inertia_estimator_specs,
             1,
             46,
-            "cpu")
+            self.device)
         # load pretrained weights if the estimator is not CRBA
         if self.inertia_estimator_specs['network'] != "CRBA":
             model_weights_path = os.path.join(
@@ -126,7 +142,7 @@ class InferencePipeline():
                 f"{self.inertia_estimator_specs['network']}.pt")
             self.inertia_estimator.load_state_dict(
                 torch.load(
-                    model_weights_path, map_location=torch.device('cpu')),
+                    model_weights_path, map_location=torch.device(self.device)),
                 strict = True)
             print(f"Loaded {self.inertia_model_name} model for inertia estimation")
         self.inertia_estimator.eval()
@@ -140,55 +156,81 @@ class InferencePipeline():
 
         ### load input data ###
         self.RT=RT
-        self.Rs = torch.FloatTensor(self.RT[:3, :3]).view(n_b, 3, 3)
-        self.P = torch.FloatTensor(K[:3])
-        self.P_tensor = self.get_P_tensor(n_b, self.target_joint_ids, self.P)
+        self.Rs = torch.FloatTensor(self.RT[:3, :3]).view(n_b, 3, 3).to(self.device)
+        self.P = torch.FloatTensor(K[:3]).to(self.device)
+        self.P_tensor = self.get_P_tensor(
+            n_b, self.target_joint_ids, self.P)
         self.p_2ds = np.load(data_path)
 
         self.p_2d_basee = self.p_2ds[:, self.openpose_dic2["base"]]
         self.p_2ds = self.p_2ds[:, self.target_ids]
-        self.p_2ds = torch.FloatTensor(self.p_2ds)
-        self.p_2d_basee = torch.FloatTensor(self.p_2d_basee)
+        self.p_2ds = torch.FloatTensor(self.p_2ds).to(self.device)
+        self.p_2d_basee = torch.FloatTensor(self.p_2d_basee).to(self.device)
 
-        self.canoical_2Ds = self.canonicalize_2Ds(torch.FloatTensor(K[:3, :3]), self.p_2ds)
+        self.canoical_2Ds = self.canonicalize_2Ds(
+            torch.FloatTensor(K[:3, :3]).to(self.device),
+            self.p_2ds)
         self.p_2ds[:, :, 0] /= self.w
         self.p_2ds[:, :, 1] /= self.h  # h
         self.p_2d_basee[:, 0] /= self.w
         self.p_2d_basee[:, 1] /= self.h  # h
         self.p_2ds_rr = self.p_2ds - self.p_2d_basee.view(-1, 1, 2)
 
-    def get_P_tensor(self,N, target_joint_ids, P):
-        P_tensor = torch.zeros(N, 3 * len(target_joint_ids), 4 * len(target_joint_ids))
+        # define loss function
+        if loss_specs["name"] == LossName.RECON_LOSS_A:
+            self.loss_cls = ReconLossA(
+                loss_specs["hparams"],
+                dof = 47)
+        else:
+            self.loss_cls = None
+
+    def get_P_tensor(self, N, target_joint_ids, P):
+        P_tensor = torch.zeros(
+            N, 3 * len(target_joint_ids), 4 * len(target_joint_ids),
+            dtype = torch.float32,
+            device = self.device)
         for i in range(int(P_tensor.shape[1] / 3)):
             P_tensor[:, i * 3:(i + 1) * 3, i * 4:(i + 1) * 4] = P
-        return torch.FloatTensor(np.array(P_tensor))
+        return P_tensor
 
     def canonicalize_2Ds(self,K, p_2Ds):
-        cs = torch.FloatTensor([K[0][2], K[1][2]]).view(1, 1, 2)
-        fs = torch.FloatTensor([K[0][0], K[1][1]]).view(1, 1, 2)
+        cs = torch.FloatTensor([K[0][2], K[1][2]]).view(1, 1, 2).to(self.device)
+        fs = torch.FloatTensor([K[0][0], K[1][1]]).view(1, 1, 2).to(self.device)
         canoical_2Ds = (p_2Ds - cs) / fs
         return canoical_2Ds
 
-    def get_grav_corioli(self,sub_ids, floor_noramls, q, qdot):
-        n_b, _ = q.shape
-        q = q.cpu().numpy().astype(float)
-        qdot = qdot.cpu().numpy().astype(float)
-        gcc = np.zeros((n_b, self.model.qdot_size))
-        floor_noramls = floor_noramls.cpu().numpy()
-        for batch_id in range(n_b):
+    def get_grav_corioli(
+        self,
+        sub_ids: List[int],
+        floor_normals_in: torch.Tensor,
+        q_in: torch.Tensor,
+        qdot_in: torch.Tensor,
+        device: str = "cuda") -> torch.Tensor:
+        batch_size, _ = q_in.shape
+        q = q_in.cpu().detach().numpy().astype(float)
+        qdot = qdot_in.cpu().detach().numpy().astype(float)
+        gcc = np.zeros(
+            (batch_size, self.model.qdot_size))
+        floor_normals = floor_normals_in.cpu().detach().numpy()
+        for batch_id in range(batch_size):
             sid = sub_ids[batch_id]
             model_address = self.model_addresses[str(int(sid))]
-            model_address.gravity = -9.8 * floor_noramls[batch_id]
-            rbdl.InverseDynamics(model_address, q[batch_id], qdot[batch_id], np.zeros(self.model.qdot_size).astype(float),  gcc[batch_id]) 
-        return torch.FloatTensor(gcc) 
+            model_address.gravity = -9.8 * floor_normals[batch_id]
+            rbdl.InverseDynamics(
+                model_address,
+                q[batch_id],
+                qdot[batch_id],
+                np.zeros(self.model.qdot_size).astype(float),
+                gcc[batch_id])
+        return torch.FloatTensor(gcc).to(device)
 
-    def contact_label_estimation(self,input_rr):
+    def contact_label_estimation(self, input_rr):
         pred_labels = self.ConNet(input_rr)
-        pred_labels = pred_labels.clone().cpu()
+        pred_labels = pred_labels.clone()
         pred_labels_prob = pred_labels.clone()
         pred_labels[pred_labels < self.con_thresh] = 0
         pred_labels[pred_labels >= self.con_thresh] = 1
-        return pred_labels,pred_labels_prob
+        return pred_labels, pred_labels_prob
 
     def gradientDescent(self,trans0,target_2D,rr_3ds):
         trans_variable = trans0.clone()
@@ -232,13 +274,26 @@ class InferencePipeline():
     def get_target_pose(self,input_can,input_rr,target_2d,trans0,first_frame_flag):
         art_tar = self.TempConvNetArt(input_rr)
         quat_tar = self.TempConvNetOri(input_rr)
-        rr_q = torch.cat((torch.zeros(n_b, 3) , quat_tar[:, 1:], art_tar, quat_tar[:, 0].view(-1, 1)), 1)#.cuda()
+        rr_q = torch.cat(
+            (torch.zeros(n_b, 3, device=self.device),
+             quat_tar[:, 1:],
+             art_tar,
+             quat_tar[:, 0].view(-1, 1)),
+            1)
         
-        rr_p_3D_p = self.PyFK_rr([self.model_addresses["0"]], self.target_joint_ids,delta_t, torch.FloatTensor([0]) , rr_q) 
+        rr_p_3D_p = self.PyFK_rr(
+            [self.model_addresses["0"]],
+            self.target_joint_ids,
+            delta_t,
+            torch.FloatTensor([0]).to(self.device),
+            rr_q) 
         q_tar = rr_q.clone()
 
         if not first_frame_flag and self.grad_descent:
-            trans_tar = self.get_translations_GD(target_2d.cpu(),rr_p_3D_p.cpu().detach(),trans0.cpu().detach())
+            # trans_tar = self.get_translations_GD(
+            #     target_2d.cpu(),rr_p_3D_p.cpu().detach(),trans0.cpu().detach())
+            # TODO:
+            raise NotImplementedError
         else: 
             trans_tar = self.TempConvNetTrans(input_can, rr_p_3D_p)
             trans_tar = torch.clamp(trans_tar, -50, 50)
@@ -260,11 +315,12 @@ class InferencePipeline():
         tau_opt = []
         gravcol = []
       
-        p_2ds_rr = self.p_2ds_rr#.cuda()
-        canoical_2Ds = self.canoical_2Ds#.cuda()
-        p_2ds = self.p_2ds#.cuda()  
+        p_2ds_rr = self.p_2ds_rr
+        canoical_2Ds = self.canoical_2Ds
+        p_2ds = self.p_2ds  
         ### set axis vectors ###
-        basis_vec_w = torch.FloatTensor(np.array([[1, 0, 0, ], [0, 1, 0, ], [0, 0, 1, ]])).view(1, 3, 3)
+        basis_vec_w = torch.FloatTensor(
+            np.array([[1, 0, 0, ], [0, 1, 0, ], [0, 0, 1, ]])).view(1, 3, 3).to(self.device)
         basis_vec_w = basis_vec_w.expand(n_b, -1, -1)
         
         # print(p_2ds_rr.shape)
@@ -277,7 +333,7 @@ class InferencePipeline():
                 i - self.temporal_window:i, ].reshape(n_b, self.temporal_window, -1)
             frame_rr_2Ds = p_2ds_rr[
                 i - self.temporal_window:i, ].reshape(n_b, self.temporal_window, -1)
-            floor_noramls = torch.transpose(
+            floor_normals = torch.transpose(
                 torch.bmm(self.Rs, torch.transpose(basis_vec_w, 1, 2)), 1, 2)[:, 1].view(n_b, 3)
             input_rr = frame_rr_2Ds.reshape(n_b, self.temporal_window, -1)
             input_can = frame_canonical_2Ds.reshape(n_b, self.temporal_window, -1)
@@ -285,33 +341,29 @@ class InferencePipeline():
 
             if i==self.temporal_window:
                 tar_trans0 = None 
-                first_frame_flag=1
+                first_frame_flag = True
             else:
-                first_frame_flag=0
+                first_frame_flag = False
 
             ### compute Target Pose ###
-            art_tar, quat_tar, trans_tar, q_tar = self.get_target_pose(input_can,input_rr,target_2d,tar_trans0,first_frame_flag)
+            art_tar, quat_tar, trans_tar, q_tar = self.get_target_pose(
+                input_can, input_rr, target_2d, tar_trans0, first_frame_flag)
             # print(f"quat_tar.shape: {quat_tar.shape}")
             # print(f"q_tar.shape: {q_tar.shape}")
             # while True:
             #     pass
-            tar_trans0=trans_tar.clone()
+            tar_trans0 = trans_tar.clone()
             with torch.no_grad(): 
                 ### compute contact labels ###
-                pred_labels,pred_labels_prob = self.contact_label_estimation(input_rr)
+                pred_labels, pred_labels_prob = self.contact_label_estimation(input_rr)
 
                 if i == self.temporal_window:
-                    q0 = q_tar.clone().cpu()
-                    pre_lr_th_cons = torch.zeros(n_b, 4 * 3)
+                    q0 = q_tar.clone()
+                    pre_lr_th_cons = torch.zeros(n_b, 4 * 3, device=self.device)
                     # print(f"qdot_size : {self.model.qdot_size}")
                     # while True:
                     #     pass
-                    qdot0 = torch.zeros(n_b, self.model.qdot_size)
-
-                quat_tar = quat_tar.cpu()
-                art_tar = art_tar.cpu()
-                trans_tar = trans_tar.cpu()
-                q_tar = q_tar.cpu()
+                    qdot0 = torch.zeros(n_b, self.model.qdot_size, device=self.device)
 
                 # extract M or M_inv
                 # M = ut.get_mass_mat_cpu(
@@ -324,15 +376,15 @@ class InferencePipeline():
                 model_output = self.inertia_estimator(model_input)
                 if self.predict_M_inv:
                     if self.inertia_estimator_specs["network"] == "CRBA":
-                        M = model_output["inertia"].clone().to("cpu")
+                        M = model_output["inertia"].clone()
                         M_inv = torch.inverse(M).clone()
                         M_inv = ut.clean_massMat(M_inv)
                     else:
-                        M_inv = model_output["inertia"].clone().to("cpu")
+                        M_inv = model_output["inertia"].clone()
                         M = torch.inverse(M_inv).clone()
                         # M_inv = ut.clean_massMat(M_inv)
                 else:
-                    M = model_output["inertia"].clone().to("cpu")
+                    M = model_output["inertia"].clone()
                     M_inv = torch.inverse(M).clone()
                     if self.inertia_estimator_specs["network"] == "CRBA":
                         M_inv = ut.clean_massMat(M_inv)
@@ -344,32 +396,52 @@ class InferencePipeline():
                 for iter in range(self.n_iter):
                     ### Compute dynamic quantitites and pose errors ###
                     
-                    J = CU.get_contact_jacobis6D_cpu(self.model, q0.numpy(), [self.rbdl_dic['left_ankle'], self.rbdl_dic['right_ankle']])  # ankles
+                    J = CU.get_contact_jacobis6D(
+                        self.model, q0.cpu().detach().numpy(),
+                        ids = [self.rbdl_dic['left_ankle'], self.rbdl_dic['right_ankle']],
+                        device = self.device)  # ankles
 
-                    quat0 = torch.cat((q0[:, -1].view(-1, 1), q0[:, 3:6]), 1).detach().clone()
-                    errors_trans, errors_ori, errors_art = CU.get_PD_errors_cpu(quat_tar, quat0, trans_tar, q0[:, :3], art_tar, q0[:, 6:-1])
+                    quat0 = torch.cat(
+                        (q0[:, -1].view(-1, 1), q0[:, 3:6]), 1).detach().clone()
+                    errors_trans, errors_ori, errors_art = CU.get_PD_errors(
+                        quat_tar, quat0, trans_tar, q0[:, :3], art_tar, q0[:, 6:-1])
                     current_errors = torch.cat((errors_trans, errors_ori, errors_art), 1)
 
                     ### Force Vector Computation ###
                     if self.neural_PD:
                         # NOTE: for DyNet's M_inv input, we use the inverse of rigid inertia
-                        M_rigid = ut.get_mass_mat_cpu(self.model, q0.detach().clone().cpu().numpy())
+                        M_rigid = ut.get_mass_mat(
+                            self.model, q0.detach().clone().cpu().numpy(), device=self.device)
                         M_inv_rigid = torch.inverse(M_rigid).clone()
                         M_inv_rigid = ut.clean_massMat(M_inv_rigid)
                         dynInput = torch.cat(
                             (q_tar, q0, qdot0, torch.flatten(M_inv_rigid, 1), current_errors,), 1)
-                        neural_gain, neural_offset = self.DyNet(dynInput )#.cuda()
-                        tau = CU.get_neural_development_cpu(errors_trans, errors_ori, errors_art, qdot0, neural_gain.cpu(), neural_offset.cpu(), self.limit,art_only=1, small_z=1)
+                        neural_gain, neural_offset = self.DyNet(dynInput)
+                        tau = CU.get_neural_development(
+                            errors_trans,
+                            errors_ori,
+                            errors_art,
+                            qdot0,
+                            neural_gain,
+                            neural_offset,
+                            self.limit,
+                            art_only=1,
+                            small_z=1)
                     else:
-                        tau = CU.get_tau(errors_trans, errors_ori, errors_art, qdot0, self.limit, small_z=1)
+                        tau = CU.get_tau(
+                            errors_trans, errors_ori, errors_art, qdot0, self.limit, small_z=1)
 
-                    gcc = self.get_grav_corioli([0], floor_noramls, q0.clone(), qdot0.clone())
+                    gcc = self.get_grav_corioli(
+                        [0], floor_normals, q0.clone(), qdot0.clone(), device=self.device)
                     tau_gcc = tau + gcc
 
                     ### GRF computation ###
-                    GRFInput = torch.cat((tau_gcc[:, :6], torch.flatten(J, 1), floor_noramls, pred_labels, pre_lr_th_cons), 1)#.cuda()
+                    GRFInput = torch.cat(
+                        (tau_gcc[:, :6], torch.flatten(J, 1), floor_normals, pred_labels, pre_lr_th_cons), 1)
                     lr_th_cons = self.GRFNet(GRFInput)
-                    gen_conF = cut.get_contact_wrench_cpu(self.model, q0, self.rbdl_dic, lr_th_cons.cpu(), pred_labels)
+                    gen_conF = cut.get_contact_wrench(
+                        self.model, q0, self.rbdl_dic, lr_th_cons, pred_labels,
+                        device = self.device)
                     # print(f"lr_th_cons.shape: {lr_th_cons.shape}")
                     # print(f"gen_conF.shape: {gen_conF.shape}")
                     # while True:
@@ -378,7 +450,17 @@ class InferencePipeline():
                     ### Forward Dynamics and Pose Update ###
                     tau_special = tau_gcc - gen_conF
                     qddot = self.PyFD(tau_special + gen_conF - gcc, M_inv)
-                    quat, q, qdot, _ = CU.pose_update_quat_cpu(qdot0.detach(), q0.detach(), quat0.detach(), delta_t, qddot, self.speed_limit, th_zero=1)
+                    quat, q, qdot, _ = CU.pose_update_quat(
+                        qdot0,
+                        q0,
+                        quat0,
+                        delta_t,
+                        qddot,
+                        self.speed_limit,
+                        th_zero = True,
+                        disable_clamp = False,
+                        # disable_clamp = True
+                    )
                     
                     # inspect qvel_diff error, and see how large the error grows
                     # if we scale by 1/delta_t
@@ -435,27 +517,33 @@ class InferencePipeline():
                     # loss_iter = mse_loss(qvel_diff_iter, Minv_tau_dt_iter)
                     # print(f"velocity loss (in cycle): {loss_iter}")
 
-                    qdot0 = qdot.detach().clone()
-                    q0 = AU.angle_normalize_batch_cpu(q.detach().clone())
-                    if iter == 0: all_tau.append(torch.flatten(tau_special).numpy())
-                    all_iter_q.append(torch.flatten(q0).numpy())
+                    qdot0 = qdot.clone()
+                    q0 = AU.angle_normalize_batch(q)
+                    if iter == 0:
+                        all_tau.append(torch.flatten(tau_special).cpu().detach().numpy())
+                    all_iter_q.append(torch.flatten(q0).cpu().detach().numpy())
                 
                 ### store the predictions ###             
-                p_3D_p = self.PyFK( [self.model_addresses["0"]], self.target_joint_ids,delta_t, torch.FloatTensor([0]) , q0) 
-                all_q.append(torch.flatten(q0).detach().numpy()) 
-                all_p_3ds.append(p_3D_p[0].cpu().numpy()) 
+                p_3D_p = self.PyFK(
+                    [self.model_addresses["0"]],
+                    self.target_joint_ids,
+                    delta_t,
+                    torch.FloatTensor([0]).to(self.device),
+                    q0) 
+                all_q.append(torch.flatten(q0).cpu().detach().numpy()) 
+                all_p_3ds.append(p_3D_p[0].cpu().detach().numpy()) 
 
                 # store kin + dyn data
-                qpos_gt.append(q_tar.detach().numpy())
+                qpos_gt.append(q_tar.cpu().detach().numpy())
                 if len(qpos_gt) >= 2:
                     qvel_gt.append(
                         AU.differentiate_qpos(
                             qpos_gt[-1], qpos_gt[-2], self.n_iter*delta_t))
-                qvel_opt.append(qdot.detach().numpy())
-                bfrc_gr_opt.append(lr_th_cons.detach().numpy())
-                qfrc_gr_opt.append(gen_conF.detach().numpy())
-                tau_opt.append(tau.detach().numpy())
-                gravcol.append(gcc.detach().numpy())
+                qvel_opt.append(qdot.cpu().detach().numpy())
+                bfrc_gr_opt.append(lr_th_cons.cpu().detach().numpy())
+                qfrc_gr_opt.append(gen_conF.cpu().detach().numpy())
+                tau_opt.append(tau.cpu().detach().numpy())
+                gravcol.append(gcc.cpu().detach().numpy())
 
                 # WTS impulse loss is large
                 # q_tar_norm = AU.angle_normalize_batch_cpu(q_tar.detach().clone())
@@ -489,8 +577,28 @@ class InferencePipeline():
                 #     loss = torch.norm(qvel_diff_opt - Minv_impl)
                 #     print(f"velocity loss using opt qvel: {loss}")
 
-                # check joint pose error
-                # print(f"||q_tar - q||: {torch.norm(q_tar - q0, 1)}")
+                # check q error
+                # print(f"||q_tar - q||_1: {torch.linalg.vector_norm(q_tar[:, :3] - q0[:, :3], ord=1)}")
+
+                # check per-frame pose error
+                per_step_pose_err = torch.linalg.vector_norm(
+                    q_tar[:, 6:-1] - q0[:, 6:-1], ord=2, dim=-1)
+                print(f"per-step pose error: {per_step_pose_err}")
+
+        # compute recon loss
+        qpos_gt = np.stack(qpos_gt, axis=1)
+        qvel_gt = np.stack(qvel_gt, axis=1)
+        qpos_pred = np.expand_dims(np.stack(all_q, axis=0), 0)
+        if self.loss_cls is not None:
+            loss_dict = self.loss_cls.loss(
+                torch.FloatTensor(qpos_gt),
+                torch.FloatTensor(qpos_pred))
+            print(f"recon loss: {loss_dict['loss']}")
+            print(f"loss_root_pos: {loss_dict['loss_root_pos']}")
+            print(f"loss_root_rot: {loss_dict['loss_root_rot']}")
+            print(f"loss_poses: {loss_dict['loss_poses']}")
+            while True:
+                pass
          
         ########### save the predictions ###############
         print('saving predictions ...')
@@ -518,7 +626,7 @@ if __name__ == "__main__":
     parser.add_argument('--img_height', type=float, default=720)
     parser.add_argument('--floor_known', type=int, default=1)
     parser.add_argument('--floor_position_path', default="./sample_data/sample_floor_position.npy")
-    parser.add_argument('--cam_params_known', type=int, default=0)
+    parser.add_argument('--cam_params_known', type=int, default=1)
     parser.add_argument('--cam_params_path', default="./sample_data/sample_cam_params.npy")
     parser.add_argument('--load_base_path', default="./data_logging/")
     parser.add_argument('--save_base_path', default="./data_logging/")
@@ -527,6 +635,7 @@ if __name__ == "__main__":
     parser.add_argument('--inertia_est_config', required=True)
     parser.add_argument('--train_experiment_name', required=True)
     parser.add_argument('--eval_til_step', type=int, default=-1)
+    parser.add_argument('--device', default="cpu")
     args = parser.parse_args()
 
     """
@@ -556,10 +665,10 @@ if __name__ == "__main__":
 
     if args.cam_params_known:  
         K = np.load(args.cam_params_path) 
-        grad_descent=0
+        grad_descent = False
     else: 
         K = np.array([1000, 0, w/2, 0, 0, 1000, h/2, 0, 0, 0, 1, 0, 0, 0, 0, 1]).reshape(4, 4) 
-        grad_descent=1
+        grad_descent = True
 
     # extract inertia estimation configs
     with open(args.inertia_est_config, "r") as stream:
@@ -579,6 +688,7 @@ if __name__ == "__main__":
         estimation_specs = inertia_est_config["estimation_specs"]
     elif train_type == "online":
         estimation_specs = inertia_est_config["inertia_estimate"]
+    loss_specs = estimation_specs["loss"]
     predict_M_inv = estimation_specs["predict_M_inv"]
     config_name = inertia_est_config["config_name"]
     load_base_path = "".join(
@@ -605,6 +715,7 @@ if __name__ == "__main__":
             save_path_per_model,
             model_name,
             model_specs,
+            loss_specs,
             predict_M_inv,
             w,h,K,RT,
             neural_PD=1,
@@ -614,5 +725,6 @@ if __name__ == "__main__":
             con_thresh=args.con_thresh,
             limit=args.tau_limit,
             speed_limit=args.speed_limit,
-            seq_name=input_basename)
+            seq_name=input_basename,
+            device=args.device)
         IPL.inference(eval_til_step=args.eval_til_step)
