@@ -352,12 +352,9 @@ class Trainer():
                     self.batch_size, self.seq_length-self.temporal_window, self.dof,
                     dtype=torch.float32,
                     device=self.device)
-                inertia_grads = []
-                weights_grads = {}
-                named_params = self.inertia_estimator.named_parameters()
-                for name, params in named_params:
-                    if params.requires_grad:
-                        weights_grads[name] = []
+                if self.inertia_estimator_specs["network"] != "CRBA":
+                    inertia_grads = []
+                    weights_grads = {}
                 for sim_step_idx in range(self.temporal_window, self.seq_length):
                     # get data per step
                     data_train_per_step: Dict[str, torch.Tensor] = {}
@@ -596,7 +593,7 @@ class Trainer():
                     for name, params in named_params:
                         assert params.grad is not None
                         if params.requires_grad:
-                            weights_grads[name].append(params.grad)
+                            weights_grads[name] = params.grad
                     self.optimizer.step()
                 loss_per_step.append(loss.item())
 
@@ -618,11 +615,11 @@ class Trainer():
                         scalar_name,
                         torch.linalg.norm(inertia_grads[0]).cpu().detach().numpy(),
                         train_step_idx)
-                for name, params_list in weights_grads.items():
+                for name, params_grads in weights_grads.items():
                     grad_max = torch.max(
-                        torch.abs(torch.stack(params_list))).cpu().detach().numpy()
+                        torch.abs(params_grads)).cpu().detach().numpy()
                     grad_mean = torch.mean(
-                        torch.abs(torch.stack(params_list))).cpu().detach().numpy()
+                        torch.abs(params_grads)).cpu().detach().numpy()
                     self.writer.add_scalar(
                         f"train_grads/{name}_grads_max",
                         grad_max,

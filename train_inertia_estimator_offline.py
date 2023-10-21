@@ -17,6 +17,7 @@ from torch.utils.data import (
     DataLoader,
     Subset)
 from inertia_models import define_inertia_estimator
+from inertia_trainer import store_and_prune_grad
 from inertia_losses import (
     LossName,
     ImpulseLoss,
@@ -265,9 +266,46 @@ if __name__ == "__main__":
                     data_train_device[M_rigid_name][:, 0])
             loss = loss_dict["loss"]
             if network != "CRBA":
+                inertia_grads = []
+                weights_grads = {}
+                inertia_hook = model_output_train["inertia"].register_hook(
+                    lambda grad: store_and_prune_grad(
+                        grad, inertia_grads, False))
                 loss.backward()
+                inertia_hook.remove()
+                # record grads
+                named_params = model.named_parameters()
+                for name, params in named_params:
+                    assert params.grad is not None
+                    if params.requires_grad:
+                        weights_grads[name] = params.grad
                 optimizer.step()
-            writer.add_scalar("train/loss", loss, step_idx)
+            
+            # log training data to tb
+            writer.add_scalar("train_loss", loss, step_idx)
+            if network != "CRBA":
+                if len(inertia_grads) > 0:
+                    if predict_M_inv:
+                        scalar_name = "train_grads/M_inv_grads_norm"
+                    else:
+                        scalar_name = "train_grads/M_grads_norm"
+                    writer.add_scalar(
+                        scalar_name,
+                        torch.linalg.norm(inertia_grads[0]).cpu().detach().numpy(),
+                        step_idx)
+                for name, param_grads in weights_grads.items():
+                    grad_max = torch.max(
+                        torch.abs(param_grads)).cpu().detach().numpy()
+                    grad_mean = torch.mean(
+                        torch.abs(param_grads)).cpu().detach().numpy()
+                    writer.add_scalar(
+                        f"train_grads/{name}_grads_max",
+                        grad_max,
+                        step_idx)
+                    writer.add_scalar(
+                        f"train_grads/{name}_grads_mean",
+                        grad_mean,
+                        step_idx)
 
             # validate
             # NOTE: for the time being, use impulse loss as val metric
@@ -309,7 +347,7 @@ if __name__ == "__main__":
                         model_output_val["inertia"],
                         data_val_device[M_rigid_name][:, 0])
                 loss_val = loss_dict["loss"]
-                writer.add_scalar("val/loss", loss, step_idx)
+                writer.add_scalar("val_loss", loss, step_idx)
 
         # test
         print(f"Testing {model_name}...")
