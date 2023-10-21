@@ -16,7 +16,6 @@ import yaml
  
 if __name__ == "__main__": 
     parser = argparse.ArgumentParser(description='arguments for predictions')
-    parser.add_argument('--input_path', default='sample_data/sample_dance.npy')
     parser.add_argument('--img_width', type=float, default=1280)
     parser.add_argument('--img_height', type=float, default=720)
     parser.add_argument('--config', required=True)

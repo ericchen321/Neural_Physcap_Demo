@@ -277,12 +277,6 @@ class Trainer():
         # set up TB writer
         self.writer = SummaryWriter(log_dir = tb_dir_path)
 
-    def get_P_tensor(self, N, target_joint_ids, P):
-        P_tensor = torch.zeros(N, 3 * len(target_joint_ids), 4 * len(target_joint_ids))
-        for i in range(int(P_tensor.shape[1] / 3)):
-            P_tensor[:, i * 3:(i + 1) * 3, i * 4:(i + 1) * 4] = P
-        return torch.FloatTensor(np.array(P_tensor))
-
     def get_grav_corioli(
         self,
         sub_ids: List[int],
@@ -406,12 +400,14 @@ class Trainer():
                         # define q0, qdot0 before the dynamic cycle
                         q0 = q_tar.view(self.batch_size, self.dof + 1)
                         # NOTE: since we're not inferring target poses on the fly,
-                        # we can obtain qdot0 from the ground truth
-                        # qdot0 = torch.zeros(
-                        #     self.batch_size, self.dof,
-                        #     dtype=torch.float32, device=self.device)
-                        qdot0 = data_train_per_step[
-                            PerMotionDataName.QVEL_GT].squeeze(-2).view(self.batch_size, self.dof)
+                        # we can obtain qdot0 from the ground truth. But I found that
+                        # initializing qvel like this leads to larger motion errors.
+                        # So still we initialize qdot0 to 0.
+                        qdot0 = torch.zeros(
+                            self.batch_size, self.dof,
+                            dtype=torch.float32, device=self.device)
+                        # qdot0 = data_train_per_step[
+                        #     PerMotionDataName.QVEL_GT].squeeze(-2).view(self.batch_size, self.dof)
                         # if sim_step_idx == self.temporal_window:
                         #     pre_lr_th_cons = torch.zeros(
                         #         self.batch_size, 4*3,
@@ -551,6 +547,13 @@ class Trainer():
                     # register predictions and other stuff
                     qpos_pred[:, sim_step_idx-self.temporal_window] = q0
                     qvel_pred[:, sim_step_idx-self.temporal_window] = qdot0
+
+                    # check per-frame pose error
+                    # per_step_pose_err = torch.mean(
+                    #     torch.linalg.vector_norm(
+                    #     q_tar[:, 6:-1] - q0[:, 6:-1], ord=2, dim=-1),
+                    #     dim=0)
+                    # print(f"per-step pose error: {per_step_pose_err}")
                     
                 # compute loss and backprop, after an entire sequence ends
                 qpos_gt = data_train_per_batch[PerMotionDataName.QPOS_GT][
@@ -613,8 +616,7 @@ class Trainer():
                         scalar_name = "train_grads/M_grads_norm"
                     self.writer.add_scalar(
                         scalar_name,
-                        torch.norm(
-                            torch.sum(torch.stack(inertia_grads), dim=0)).cpu().detach().numpy(),
+                        torch.linalg.norm(inertia_grads[0]).cpu().detach().numpy(),
                         train_step_idx)
                 for name, params_list in weights_grads.items():
                     grad_max = torch.max(
