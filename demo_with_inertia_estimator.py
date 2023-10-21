@@ -376,16 +376,16 @@ class InferencePipeline():
                 model_output = self.inertia_estimator(model_input)
                 if self.predict_M_inv:
                     if self.inertia_estimator_specs["network"] == "CRBA":
-                        M = model_output["inertia"].clone()
-                        M_inv = torch.inverse(M).clone()
+                        M = model_output["inertia"]
+                        M_inv = torch.inverse(M)
                         M_inv = ut.clean_massMat(M_inv)
                     else:
-                        M_inv = model_output["inertia"].clone()
-                        M = torch.inverse(M_inv).clone()
+                        M_inv = model_output["inertia"]
+                        M = torch.inverse(M_inv)
                         # M_inv = ut.clean_massMat(M_inv)
                 else:
-                    M = model_output["inertia"].clone()
-                    M_inv = torch.inverse(M).clone()
+                    M = model_output["inertia"]
+                    M_inv = torch.inverse(M)
                     if self.inertia_estimator_specs["network"] == "CRBA":
                         M_inv = ut.clean_massMat(M_inv)
                     else:
@@ -402,7 +402,7 @@ class InferencePipeline():
                         device = self.device)  # ankles
 
                     quat0 = torch.cat(
-                        (q0[:, -1].view(-1, 1), q0[:, 3:6]), 1).detach().clone()
+                        (q0[:, -1].view(-1, 1), q0[:, 3:6]), 1)
                     errors_trans, errors_ori, errors_art = CU.get_PD_errors(
                         quat_tar, quat0, trans_tar, q0[:, :3], art_tar, q0[:, 6:-1])
                     current_errors = torch.cat((errors_trans, errors_ori, errors_art), 1)
@@ -411,8 +411,10 @@ class InferencePipeline():
                     if self.neural_PD:
                         # NOTE: for DyNet's M_inv input, we use the inverse of rigid inertia
                         M_rigid = ut.get_mass_mat(
-                            self.model, q0.detach().clone().cpu().numpy(), device=self.device)
-                        M_inv_rigid = torch.inverse(M_rigid).clone()
+                            self.model,
+                            q0.detach().clone().cpu().numpy(),
+                            device=self.device)
+                        M_inv_rigid = torch.inverse(M_rigid)
                         M_inv_rigid = ut.clean_massMat(M_inv_rigid)
                         dynInput = torch.cat(
                             (q_tar, q0, qdot0, torch.flatten(M_inv_rigid, 1), current_errors,), 1)
@@ -437,7 +439,12 @@ class InferencePipeline():
 
                     ### GRF computation ###
                     GRFInput = torch.cat(
-                        (tau_gcc[:, :6], torch.flatten(J, 1), floor_normals, pred_labels, pre_lr_th_cons), 1)
+                        (tau_gcc[:, :6],
+                         torch.flatten(J, 1),
+                         floor_normals,
+                         pred_labels,
+                         pre_lr_th_cons),
+                        1)
                     lr_th_cons = self.GRFNet(GRFInput)
                     gen_conF = cut.get_contact_wrench(
                         self.model, q0, self.rbdl_dic, lr_th_cons, pred_labels,
@@ -449,7 +456,10 @@ class InferencePipeline():
                      
                     ### Forward Dynamics and Pose Update ###
                     tau_special = tau_gcc - gen_conF
-                    qddot = self.PyFD(tau_special + gen_conF - gcc, M_inv)
+                    # qddot = self.PyFD(tau_special + gen_conF - gcc, M_inv)
+                    qddot = torch.bmm(
+                        M_inv.view(n_b, 46, 46),
+                        tau.view(n_b, 46, 1)).view(n_b, 46)
                     quat, q, qdot, _ = CU.pose_update_quat(
                         qdot0,
                         q0,
@@ -458,8 +468,8 @@ class InferencePipeline():
                         qddot,
                         self.speed_limit,
                         th_zero = True,
-                        disable_clamp = False,
-                        # disable_clamp = True
+                        # disable_clamp = False,
+                        disable_clamp = True
                     )
                     
                     # inspect qvel_diff error, and see how large the error grows
