@@ -248,8 +248,8 @@ class ReconLossA:
         # compute loss on root pos
         root_pos_gt = qpos_gt[:, :, :3]
         root_pos_pred = qpos_pred[:, :, :3]
-        root_pos_diff_norm = torch.norm(
-            root_pos_pred - root_pos_gt, p="fro", dim=-1).view(num_sims, num_steps)
+        root_pos_diff_norm = torch.linalg.vector_norm(
+            root_pos_pred - root_pos_gt, ord=2, dim=-1).view(num_sims, num_steps)
         root_pos_diff_sums = torch.sum(root_pos_diff_norm, dim=-1).view(num_sims,)
         loss_root_pos = torch.mean(root_pos_diff_sums)
         
@@ -267,16 +267,18 @@ class ReconLossA:
             root_rot_pred)
         root_rot_pred_mat = self.angle_util.get_44_rotation_matrix_from_33_rotation_matrix(
             root_rot_pred_mat).view(num_sims, num_steps, 4, 4)
-        root_rot_diff_norm = torch.norm(
-            root_rot_pred_mat - root_rot_gt_mat, p="fro", dim=(-2, -1)).view(num_sims, num_steps)
+        root_rot_diff_norm = torch.linalg.matrix_norm(
+            root_rot_pred_mat - root_rot_gt_mat,
+            ord="fro", dim=(-2, -1)).view(num_sims, num_steps)
         root_rot_diff_sums = torch.sum(root_rot_diff_norm, dim=-1).view(num_sims,)
         loss_root_rot = torch.mean(root_rot_diff_sums)
 
         # compute loss on joint angles
         poses_gt = qpos_gt[:, :, 6:-1].view(num_sims, num_steps, 40)
         poses_pred = qpos_pred[:, :, 6:-1].view(num_sims, num_steps, 40)
-        poss_diff_norms = torch.norm(
-            poses_pred - poses_gt, p=self.pose_loss_norm, dim=-1).view(num_sims, num_steps)
+        poss_diff_norms = torch.linalg.vector_norm(
+            poses_pred - poses_gt,
+            ord=self.pose_loss_norm, dim=-1).view(num_sims, num_steps)
         poss_diff_sums = torch.sum(poss_diff_norms, dim=-1).view(num_sims,)
         loss_poses = torch.mean(poss_diff_sums)
         
@@ -324,8 +326,9 @@ class ReconLossB:
         # sum up error norms across steps, similar to Eq. 11 from
         # "Physically Plausible Reconstruction from Monocular Videos"
         # then average across sequences
-        qpos_diff_norm = torch.norm(
-            qpos_pred - qpos_gt, p="fro", dim=-1).view(num_sims, num_steps)
+        qpos_diff_norm = torch.linalg.vector_norm(
+            qpos_pred - qpos_gt,
+            ord=2, dim=-1).view(num_sims, num_steps)
         qpos_diff_sums = torch.sum(qpos_diff_norm, dim=-1).view(num_sims,)
         loss = torch.mean(qpos_diff_sums)
         return {

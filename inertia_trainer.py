@@ -606,28 +606,29 @@ class Trainer():
                     "train_loss/loss_root_rot", loss_dict["loss_root_rot"], train_step_idx)
                 self.writer.add_scalar(
                     "train_loss/loss_poses", loss_dict["loss_poses"], train_step_idx)
-                if len(inertia_grads) > 0:
-                    if self.predict_M_inv:
-                        scalar_name = "train_grads/M_inv_grads_norm"
-                    else:
-                        scalar_name = "train_grads/M_grads_norm"
-                    self.writer.add_scalar(
-                        scalar_name,
-                        torch.linalg.norm(inertia_grads[0]).cpu().detach().numpy(),
-                        train_step_idx)
-                for name, params_grads in weights_grads.items():
-                    grad_max = torch.max(
-                        torch.abs(params_grads)).cpu().detach().numpy()
-                    grad_mean = torch.mean(
-                        torch.abs(params_grads)).cpu().detach().numpy()
-                    self.writer.add_scalar(
-                        f"train_grads/{name}_grads_max",
-                        grad_max,
-                        train_step_idx)
-                    self.writer.add_scalar(
-                        f"train_grads/{name}_grads_mean",
-                        grad_mean,
-                        train_step_idx)
+                if self.inertia_estimator_specs["network"] != "CRBA":
+                    if len(inertia_grads) > 0:
+                        if self.predict_M_inv:
+                            scalar_name = "train_grads/M_inv_grads_norm"
+                        else:
+                            scalar_name = "train_grads/M_grads_norm"
+                        self.writer.add_scalar(
+                            scalar_name,
+                            torch.linalg.norm(inertia_grads[0]).cpu().detach().numpy(),
+                            train_step_idx)
+                    for name, params_grads in weights_grads.items():
+                        grad_max = torch.max(
+                            torch.abs(params_grads)).cpu().detach().numpy()
+                        grad_mean = torch.mean(
+                            torch.abs(params_grads)).cpu().detach().numpy()
+                        self.writer.add_scalar(
+                            f"train_grads/{name}_grads_max",
+                            grad_max,
+                            train_step_idx)
+                        self.writer.add_scalar(
+                            f"train_grads/{name}_grads_mean",
+                            grad_mean,
+                            train_step_idx)
                 
     def save_model(self):
         if self.inertia_estimator_specs['network'] != "CRBA":
