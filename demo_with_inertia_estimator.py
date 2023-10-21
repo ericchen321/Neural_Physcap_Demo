@@ -303,7 +303,8 @@ class InferencePipeline():
 
     def inference(
         self,
-        eval_til_step: int = -1):
+        start_step_idx: int,
+        last_step_idx: int = -1):
 
         ### Initialization ###
         all_q , all_p_3ds, all_tau, all_iter_q =  [],[],[],[]
@@ -323,12 +324,16 @@ class InferencePipeline():
             np.array([[1, 0, 0, ], [0, 1, 0, ], [0, 0, 1, ]])).view(1, 3, 3).to(self.device)
         basis_vec_w = basis_vec_w.expand(n_b, -1, -1)
         
+        # Sample targets
         # print(p_2ds_rr.shape)
         # while True:
         #     pass
-        if eval_til_step == -1:
-            eval_til_step = len(p_2ds_rr)
-        for i in tqdm.tqdm(list(range(self.temporal_window, eval_til_step))):
+        art_tars = []
+        quant_tars = []
+        trans_tars = []
+        q_tars = []
+        print("Sampling targets...")
+        for i in tqdm.tqdm(list(range(self.temporal_window, len(p_2ds_rr)))):
             frame_canonical_2Ds = canoical_2Ds[
                 i - self.temporal_window:i, ].reshape(n_b, self.temporal_window, -1)
             frame_rr_2Ds = p_2ds_rr[
@@ -353,17 +358,40 @@ class InferencePipeline():
             # while True:
             #     pass
             tar_trans0 = trans_tar.clone()
+            art_tars.append(art_tar)
+            quant_tars.append(quat_tar)
+            trans_tars.append(trans_tar)
+            q_tars.append(q_tar)
+
+        # Evaluate
+        assert start_step_idx >= self.temporal_window and start_step_idx < last_step_idx, \
+            "start_step_idx must be >= temporal_window and < last_step_idx"
+        assert last_step_idx < len(p_2ds_rr), \
+            "last_step_idx must be < len(p_2ds_rr)"
+        if last_step_idx == -1:
+            last_step_idx = len(p_2ds_rr) - 1
+        i_start = start_step_idx - self.temporal_window
+        i_end = last_step_idx - self.temporal_window
+        print(f"Evaluating inertia estimator over {i_end - i_start + 1} steps...")
+        for i in tqdm.tqdm(list(range(i_start, i_end+1))):
+            # extract target
+            q_tar = q_tars[i - self.temporal_window]
+            art_tar = art_tars[i - self.temporal_window]
+            quat_tar = quant_tars[i - self.temporal_window]
+            trans_tar = trans_tars[i - self.temporal_window]
+
             with torch.no_grad(): 
                 ### compute contact labels ###
                 pred_labels, pred_labels_prob = self.contact_label_estimation(input_rr)
 
-                if i == self.temporal_window:
+                if i == i_start:
                     q0 = q_tar.clone()
                     pre_lr_th_cons = torch.zeros(n_b, 4 * 3, device=self.device)
                     # print(f"qdot_size : {self.model.qdot_size}")
                     # while True:
                     #     pass
-                    qdot0 = torch.zeros(n_b, self.model.qdot_size, device=self.device)
+                    qdot0 = torch.zeros(
+                        n_b, self.model.qdot_size, device=self.device)
 
                 # extract M or M_inv
                 # M = ut.get_mass_mat_cpu(
@@ -644,8 +672,9 @@ if __name__ == "__main__":
     parser.add_argument('--temporal_window', type=int, default=10)
     parser.add_argument('--inertia_est_config', required=True)
     parser.add_argument('--train_experiment_name', required=True)
-    parser.add_argument('--eval_til_step', type=int, default=-1)
     parser.add_argument('--device', default="cpu")
+    parser.add_argument('--start_step_idx', type=int, default=10)
+    parser.add_argument('--last_step_idx', type=int, default=-1)
     args = parser.parse_args()
 
     """
@@ -737,4 +766,6 @@ if __name__ == "__main__":
             speed_limit=args.speed_limit,
             seq_name=input_basename,
             device=args.device)
-        IPL.inference(eval_til_step=args.eval_til_step)
+        IPL.inference(
+            start_step_idx=args.start_step_idx,
+            last_step_idx=args.last_step_idx)
