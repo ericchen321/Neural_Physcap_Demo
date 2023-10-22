@@ -1,3 +1,7 @@
+# Author: Guanxiong and the original authors
+# modified upon simple.py
+
+
 import numpy as np
 import pybullet as p 
 import rbdl 
@@ -12,7 +16,6 @@ import argparse
 if __name__ == "__main__":  
     parser = argparse.ArgumentParser(description='arguments for visualization')
     parser.add_argument('--urdf_path', default="./URDF/manual.urdf")
-    parser.add_argument('--save_path', default="./results/q_iter_dyn.npy")
     parser.add_argument('--floor_position_path', default="./sample_data/sample_floor_position.npy")
     args = parser.parse_args()
 
@@ -41,15 +44,10 @@ if __name__ == "__main__":
     id_robot = p.loadURDF(
         urdf_path, useFixedBase=False) 
     _, _, jointIds, jointNames = ut.get_jointIds_Names(id_robot)
-    save_path = args.save_path
-    q=copy.copy(np.load(save_path, mmap_mode='r'))
-    q[:,6+27]=0
-    q[:,6+35]=0
-    q[:,6+36]=0
-    q[:,6+37]=0
-    q[:,6+38]=0  
-    count=0 
-    while(1): 
+    q = np.zeros((1, 47), dtype=np.float32)
+    q[:, [3, 4, 5, 46]] = [1.0, 0.0, 0.0, 0.0]
+    count = 0
+    while True: 
         print(count) 
         ut.visualization3D_multiple(
             [id_robot], jointIds, rbdl2bullet, [q[count]], Rot=R,T=T , overlay=True) 
@@ -58,4 +56,4 @@ if __name__ == "__main__":
 
         count+=1
         if count >= len(q):
-            count =0
+            count = 0
