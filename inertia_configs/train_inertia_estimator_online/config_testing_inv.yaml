@@ -2,7 +2,7 @@
 config_name: "config_testing_inv"
 h5_path: "data_logging/demo/sample_dance+t=2023-10-11-12-52-04/data+seq_name=sample_dance.h5"
 pretrained_nw_path: "trained_models/"
-seq_length: 20
+seq_length: 10
 temporal_window: 1
 
 # dynamics:
@@ -30,18 +30,18 @@ inertia_estimate:
   pretrained_weights:
     experiment_name: "config_f06+sample_dance+t=2023-10-16-16-23-53"
     # experiment_name: "config_f04+sample_dance+t=2023-10-16-15-19-16/"
-  num_train_steps: 400
+  num_train_steps: 20
   loss:
     name: "recon_loss_a"
     hparams:
-      weight_root_pos: 1.0
-      weight_root_rot: 1.0
+      weight_root_pos: 10.0
+      weight_root_rot: 5.0
       weight_poses: 1.0
-      pose_loss_norm: 1
+      pose_loss_norm: 2
   optimizer:
     name: "Adam"
     params:
-      learning_rate: 8.0e-7
+      learning_rate: 5.0e-5
       amsgrad: True
   batch_size: 64
   steps_til_val: 10
@@ -59,12 +59,12 @@ inertia_estimate:
         positivity: "ReLU"
       activation: "lrelu"
       normalize_inputs: False
-    nn+SymmNet:
-      network: "SymmNetBase"
-      mlp:
-        widths: [8192, 4096, 2048]
-      activation: "lrelu"
-      normalize_inputs: False
+    # nn+SymmNet:
+    #   network: "SymmNetBase"
+    #   mlp:
+    #     widths: [8192, 4096, 2048]
+    #   activation: "lrelu"
+    #   normalize_inputs: False
     CRBA:
       arch: "nn"
       network: "CRBA"

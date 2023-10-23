@@ -7,7 +7,7 @@ import os
 dir_path = os.path.dirname(os.path.realpath(__file__)) 
 import numpy as np
 from dataset import PerMotionExtendedDataset
-from inertia_trainer import Trainer
+from inertia_trainer import OnlineTrainer
 from torch.utils.data import random_split
 import argparse  
 from datetime import datetime
@@ -120,11 +120,12 @@ if __name__ == "__main__":
 
         # train in the dynamic cycle
         print(f"Training {model_name}...")
-        trainer = Trainer(
+        trainer = OnlineTrainer(
             urdf_path,
             net_path,
             seq_length,
             dataset_train,
+            dataset_val,
             data_save_dir_per_model,
             tb_dir_per_model,
             model_name,
@@ -145,6 +146,7 @@ if __name__ == "__main__":
             motion_name = motion_name,
             batch_size = batch_size,
             num_train_steps = num_train_steps,
+            steps_til_val = steps_til_val,
             device = device)
         trainer.train_and_validate()
         trainer.save_model()

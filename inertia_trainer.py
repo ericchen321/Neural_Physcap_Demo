@@ -29,7 +29,7 @@ from Utils.initializer import InitializerConsistentHumanoid2
 from Utils.inertia_utils import move_dict_to_device
 from torch.nn.utils import clip_grad_norm_
 from torch.utils.tensorboard import SummaryWriter
-from typing import Dict, List
+from typing import Dict, List, Union
 
 
 def store_and_clip_grad(
@@ -46,7 +46,7 @@ def store_and_clip_grad(
 
 
 def store_and_prune_grad(
-    grad,
+    grad: torch.Tensor,
     storing_list,
     prune_grad: bool = False,
     grad_thresh: float = 4.0):
@@ -55,13 +55,13 @@ def store_and_prune_grad(
             print("nan in grad")
         grad_new = torch.nan_to_num(
             grad, nan=0.0, posinf=grad_thresh, neginf=-grad_thresh)
-        storing_list.append(grad_new.clone())
+        storing_list.append(grad_new.clone().cpu().detach().numpy())
         return grad_new
     else:
-        storing_list.append(grad.clone())
+        storing_list.append(grad.clone().cpu().detach().numpy())
 
 
-class Trainer():
+class OnlineTrainer():
     r"""
     A trainer for an inertia estimator.
     """
@@ -72,6 +72,7 @@ class Trainer():
         net_path,
         seq_length,
         dataset_train,
+        dataset_val,
         save_base_path,
         tb_dir_path,
         inertia_model_name,
@@ -91,6 +92,7 @@ class Trainer():
         motion_name = "",
         batch_size = 1,
         num_train_steps = 1000,
+        steps_til_val = 100,
         device = "cuda"):
 
         # save basic configs
@@ -108,6 +110,7 @@ class Trainer():
         self.motion_name = motion_name
         self.batch_size = batch_size
         self.num_train_steps = num_train_steps
+        self.steps_til_val = steps_til_val
         self.grad_thresh = 4.0
         self.device = device
         self.num_joints = 24
@@ -227,11 +230,17 @@ class Trainer():
         self.PyFK = ppf.PyForwardKinematicsQuaternion().apply 
         self.PyFD = ppf.PyForwardDynamics.apply
 
-        # set up dataloader
+        # set up dataloaders
         self.dataloader_train = DataLoader(
             dataset_train,
             batch_size = self.batch_size,
             shuffle = True,
+            drop_last=True,
+            num_workers = 0)
+        self.dataloader_val = DataLoader(
+            dataset_val,
+            batch_size = len(dataset_val),
+            shuffle = False,
             drop_last=True,
             num_workers = 0)
         
@@ -311,10 +320,310 @@ class Trainer():
         pred_labels[pred_labels >= self.con_thresh] = 1
         return pred_labels, pred_labels_prob
 
+    def simulate(
+        self,
+        data_train_per_batch: Dict[str, torch.Tensor],
+        mode: str = "train") -> Dict[str, Union[Dict, np.ndarray]]:
+        r"""
+        Simulate across frames. Do forward prop. If in training mode and
+        inertia estimator contains trainable params, do backprop.
+
+        Return:
+            A dictionary containing:
+            - qpos_gt: ground truth qpos
+                (num_seqs, seq_length-temporal_window, dof+1)
+            - qpos_pred: predicted qpos
+                (num_seqs, seq_length-temporal_window, dof+1)
+            - qvel_pred: predicted qvel
+                (num_seqs, seq_length-temporal_window, dof)
+            - loss_dict: dictionary of loss items, aggregated over sim steps.
+                Only in training mode.
+            - inertia_grads: grads of inertia estimator output, per sim step.
+                Only in training mode for NN-based inertia estimator.
+                (1, dof+1, dof+1)
+            - weights_grads: grads of inertia estimator weights, per sim step,
+                per named parameter. Only in training mode for estimators with
+                trainable params.              
+        """
+        # precondition checks
+        assert mode in ["train", "val"]
+
+        # compute normalized target 2D joint positions
+        num_seqs = data_train_per_batch[PerMotionExtendedDataName.P_2DS_GT].shape[0]
+        p_2ds = data_train_per_batch[
+            PerMotionExtendedDataName.P_2DS_GT].view(
+            num_seqs, self.seq_length, self.num_joints, 2)
+        p_2d_base = p_2ds[:, :, self.openpose_dic2["base"]].view(
+            num_seqs, self.seq_length, 2)
+        p_2ds = p_2ds[:, :, self.target_ids].view(
+            num_seqs, self.seq_length, len(self.target_ids), 2)
+        p_2ds[:, :, :, 0] /= self.w
+        p_2ds[:, :, :, 1] /= self.h
+        p_2d_base[:, :, 0] /= self.w
+        p_2d_base[:, :, 1] /= self.h
+        p_2ds_rr = (p_2ds - p_2d_base.unsqueeze(dim=2)).view(
+            num_seqs, self.seq_length, len(self.target_ids), 2)
+        
+        # simulate sequences in a batch altogether
+        qpos_pred = torch.zeros(
+            num_seqs, self.seq_length-self.temporal_window, self.dof+1,
+            dtype=torch.float32,
+            device=self.device)
+        qvel_pred = torch.zeros(
+            num_seqs, self.seq_length-self.temporal_window, self.dof,
+            dtype=torch.float32,
+            device=self.device)
+        if mode == "train" and self.inertia_estimator_specs["network"] != "CRBA":
+            inertia_grads = []
+            weights_grads = {}
+        
+        for sim_step_idx in range(self.temporal_window, self.seq_length):
+            # get data per step
+            data_train_per_step: Dict[str, torch.Tensor] = {}
+            for data_name, data in data_train_per_batch.items():
+                data_train_per_step[data_name] = data[:, [sim_step_idx]]
+
+            # set axis vectors
+            # basis_vec_w = torch.FloatTensor(
+            #     np.array(
+            #         [[1, 0, 0, ], [0, 1, 0, ], [0, 0, 1, ]])).to(self.device).view(1, 3, 3)
+            # basis_vec_w = basis_vec_w.expand(num_seqs, -1, -1)
+            
+            # setup input_rr (for contact label estimation) and floor normals
+            # for computing forces
+            # frame_rr_2Ds = p_2ds_rr.clone()[
+            #     :,
+            #     sim_step_idx-self.temporal_window:sim_step_idx].view(
+            #     num_seqs, self.temporal_window, len(self.target_ids)*2)
+            # floor_normals = torch.transpose(
+            #     torch.bmm(
+            #         self.Rs,
+            #         torch.transpose(
+            #             basis_vec_w, 1, 2)), 1, 2)[:, 1].view(num_seqs, 3)
+            # input_rr = frame_rr_2Ds.view(
+            #     num_seqs, self.temporal_window, -1)
+
+            # extract target pose
+            q_tar = data_train_per_step[
+                PerMotionDataName.QPOS_GT].squeeze(-2).view(num_seqs, self.dof+1)
+            trans_tar = q_tar[:, :3].view(num_seqs, 3)
+            quat_tar = torch.cat((q_tar[:, -1].view(-1, 1), q_tar[:, 3:6]), 1).view(
+                num_seqs, 4)
+            art_tar = q_tar[:, 6:-1].view(num_seqs, 40)
+            
+            # compute contact labels
+            # with torch.no_grad(): 
+            #     pred_labels, _ = self.contact_label_estimation(input_rr)
+
+            if sim_step_idx == self.temporal_window:
+                # define q0, qdot0 before the dynamic cycle
+                q0 = q_tar.view(num_seqs, self.dof + 1)
+                # NOTE: since we're not inferring target poses on the fly,
+                # we can obtain qdot0 from the ground truth. But I found that
+                # initializing qvel like this leads to larger motion errors.
+                # So still we initialize qdot0 to 0.
+                qdot0 = torch.zeros(
+                    num_seqs, self.dof,
+                    dtype=torch.float32, device=self.device)
+                # qdot0 = data_train_per_step[
+                #     PerMotionDataName.QVEL_GT].squeeze(-2).view(num_seqs, self.dof)
+                # if sim_step_idx == self.temporal_window:
+                #     pre_lr_th_cons = torch.zeros(
+                #         num_seqs, 4*3,
+                #         dtype=q0.dtype, device=self.device)
+            else:
+                pass
+                # q0 = q_tar.view(num_seqs, self.dof + 1)
+                # qdot0 = data_train_per_step[
+                #     PerMotionDataName.QVEL_GT].squeeze(-2).view(num_seqs, self.dof)
+
+            # estimate inertia / forward prop
+            # NOTE: here we use our inertia estimator instead of get_mass_mat_cpu().
+            # Also, we estimate inertia for each dynamic cycle within a frame
+            if mode == "train" and self.inertia_estimator_specs["network"] != "CRBA":
+                self.optimizer.zero_grad()
+                self.inertia_estimator.train()
+            elif mode == "train":
+                self.inertia_estimator.eval()
+            else:
+                # mode is val
+                self.inertia_estimator.eval()
+            model_input = {
+                "qpos": q0.clone().unsqueeze(1),
+                "qvel": qdot0.clone().unsqueeze(1)}
+            model_output = self.inertia_estimator(model_input)
+            
+            # extract M or M_inv
+            if self.predict_M_inv:
+                if self.inertia_estimator_specs["network"] == "CRBA":
+                    M = model_output["inertia"]
+                    M_inv = torch.inverse(M)
+                    M_inv = ut.clean_massMat(M_inv)
+                else:
+                    M_inv = model_output["inertia"]
+                    M = torch.inverse(M_inv)
+            else:
+                M = model_output["inertia"]
+                M_inv = torch.inverse(M)
+                if self.inertia_estimator_specs["network"] == "CRBA":
+                    M_inv = ut.clean_massMat(M_inv)
+            
+            # run the dynamic cycle
+            tau_per_cycle = []
+            for cycle_idx in range(self.num_dyn_cycles):
+                # compute ankle Jacobians
+                # J = self.cu.get_contact_jacobis6D(
+                #     self.rbdl_model,
+                #     q0.clone().cpu().detach().numpy(),
+                #     [self.rbdl_dic['left_ankle'], self.rbdl_dic['right_ankle']],
+                #     self.device)
+
+                # compute errors
+                quat0 = torch.cat((q0[:, -1].view(-1, 1), q0[:, 3:6]), 1)
+                errors_trans, errors_ori, errors_art = self.cu.get_PD_errors(
+                    quat_tar, quat0, trans_tar, q0[:, :3], art_tar, q0[:, 6:-1])
+                current_errors = torch.cat((errors_trans, errors_ori, errors_art), 1)
+
+                # compute gains and tau
+                if self.neural_PD:
+                    # NOTE: for DyNet's M_inv input, we use the inverse of rigid inertia
+                    M_rigid = ut.get_mass_mat(
+                        self.rbdl_model,
+                        q0.detach().clone().cpu().numpy(),
+                        device = self.device)
+                    M_inv_rigid = torch.inverse(M_rigid)
+                    M_inv_rigid = ut.clean_massMat(M_inv_rigid)
+                    dynInput = torch.cat(
+                        (q_tar, q0, qdot0, torch.flatten(M_inv_rigid, 1), current_errors,), 1)
+                    neural_gain, neural_offset = self.DyNet(dynInput)
+                    tau = self.cu.get_neural_development(
+                        errors_trans,
+                        errors_ori,
+                        errors_art,
+                        qdot0,
+                        neural_gain,
+                        neural_offset,
+                        self.limit,
+                        art_only = 1,
+                        small_z = 1)
+                else:
+                    tau = self.cu.get_tau(
+                        errors_trans,
+                        errors_ori,
+                        errors_art,
+                        qdot0,
+                        self.limit,
+                        small_z = 1)
+
+                # compute gravity and Coriolis force
+                # gcc = self.get_grav_corioli(
+                #     [0],
+                #     floor_normals,
+                #     q0,
+                #     qdot0)
+                # tau_gcc = tau + gcc
+                
+                # compute GRF/M
+                # GRFInput = torch.cat(
+                #     (tau_gcc[:, :6],
+                #      torch.flatten(J, 1),
+                #      floor_normals,
+                #      pred_labels,
+                #      pre_lr_th_cons), 1)
+                # lr_th_cons = self.GRFNet(GRFInput)
+                # gen_conF = cut.get_contact_wrench(
+                #     self.rbdl_model,
+                #     q0,
+                #     self.rbdl_dic,
+                #     lr_th_cons,
+                #     pred_labels)
+
+                # run Forward Dynamics and compute new q, qdot
+                # qddot = self.PyFD(tau, M_inv)
+                qddot = torch.bmm(
+                    M_inv.view(num_seqs, self.dof, self.dof),
+                    tau.view(num_seqs, self.dof, 1)).view(num_seqs, self.dof)
+                _, q, qdot, _ = self.cu.pose_update_quat(
+                    qdot0,
+                    q0,
+                    quat0,
+                    self.delta_t,
+                    qddot,
+                    self.speed_limit,
+                    th_zero = True,
+                    disable_clamp = True)
+
+                # update qdot0, q0
+                qdot0 = qdot.clone()
+                q0 = self.au.angle_normalize_batch(q)
+
+                # register tau
+                tau_per_cycle.append(tau)
+            
+            # compute 3D joint positions (?)           
+            # p_3D_p = self.PyFK( 
+            #     [self.model_addresses["0"]],
+            #     self.target_joint_ids,
+            #     self.num_dyn_cycles * self.delta_t,
+            #     torch.FloatTensor([0]),
+            #     q0)
+
+            # register predictions and other stuff
+            qpos_pred[:, sim_step_idx-self.temporal_window] = q0
+            qvel_pred[:, sim_step_idx-self.temporal_window] = qdot0
+
+            # check per-frame pose error
+            # per_step_pose_err = torch.mean(
+            #     torch.linalg.vector_norm(
+            #     q_tar[:, 6:-1] - q0[:, 6:-1], ord=2, dim=-1),
+            #     dim=0)
+            # print(f"per-step pose error: {per_step_pose_err}")
+
+        # compute loss and backprop, after an entire sequence ends
+        qpos_gt = data_train_per_batch[PerMotionDataName.QPOS_GT][
+            :, self.temporal_window:].view(
+            num_seqs, self.seq_length-self.temporal_window, self.dof+1)
+        loss_dict = self.loss_cls.loss(
+            qpos_pred,
+            qpos_gt)
+        loss = loss_dict["loss"]
+
+        # backprop
+        if mode == "train" and self.inertia_estimator_specs["network"] != "CRBA":
+            if self.predict_M_inv:
+                inertia_hook = M_inv.register_hook(
+                    lambda grad: store_and_prune_grad(
+                        grad, inertia_grads, True, self.grad_thresh))
+            else:
+                inertia_hook = M.register_hook(
+                    lambda grad: store_and_prune_grad(
+                        grad, inertia_grads, True, self.grad_thresh))
+            loss.backward()
+            inertia_hook.remove()
+            # clip grads
+            clip_grad_norm_(self.inertia_estimator.parameters(), self.grad_thresh)
+            # record grads
+            named_params = self.inertia_estimator.named_parameters()
+            for name, params in named_params:
+                assert params.grad is not None
+                if params.requires_grad:
+                    weights_grads[name] = params.grad.cpu().detach().numpy()
+            self.optimizer.step()
+        
+        ret_dict = {
+            "qpos_gt": qpos_gt.cpu().detach().numpy(),
+            "qpos_pred": qpos_pred.cpu().detach().numpy(),
+            "qvel_pred": qvel_pred.cpu().detach().numpy(),
+            "loss_dict": loss_dict,
+        }
+        if mode == "train" and self.inertia_estimator_specs["network"] != "CRBA":
+            ret_dict["inertia_grads"] = np.array(inertia_grads)
+            ret_dict["weights_grads"] = weights_grads
+        return ret_dict
+    
     def train_and_validate(
         self):
 
-        losses = []
         with torch.autograd.set_detect_anomaly(True):
             iterator_train = iter(self.dataloader_train)
             for train_step_idx in tqdm.tqdm(list(range(self.num_train_steps))):
@@ -327,286 +636,27 @@ class Trainer():
                 data_train_per_batch = move_dict_to_device(
                     data_train, self.device)
                 
-                # compute normalized target 2D joint positions
-                p_2ds = data_train_per_batch[
-                    PerMotionExtendedDataName.P_2DS_GT].view(
-                    self.batch_size, self.seq_length, self.num_joints, 2)
-                p_2d_base = p_2ds[:, :, self.openpose_dic2["base"]].view(
-                    self.batch_size, self.seq_length, 2)
-                p_2ds = p_2ds[:, :, self.target_ids].view(
-                    self.batch_size, self.seq_length, len(self.target_ids), 2)
-                p_2ds[:, :, :, 0] /= self.w
-                p_2ds[:, :, :, 1] /= self.h
-                p_2d_base[:, :, 0] /= self.w
-                p_2d_base[:, :, 1] /= self.h
-                p_2ds_rr = (p_2ds - p_2d_base.unsqueeze(dim=2)).view(
-                    self.batch_size, self.seq_length, len(self.target_ids), 2)
-                
-                # simulate sequences in a batch altogether
-                loss_per_step = []
-                qpos_pred = torch.zeros(
-                    self.batch_size, self.seq_length-self.temporal_window, self.dof+1,
-                    dtype=torch.float32,
-                    device=self.device)
-                qvel_pred = torch.zeros(
-                    self.batch_size, self.seq_length-self.temporal_window, self.dof,
-                    dtype=torch.float32,
-                    device=self.device)
+                # train and visualize training info in TB
+                sim_dict_train = self.simulate(data_train_per_batch, mode="train")
+                self.writer.add_scalar(
+                    "train_loss/loss_total",
+                    sim_dict_train["loss_dict"]["loss"],
+                    train_step_idx)
+                self.writer.add_scalar(
+                    "train_loss/loss_root_pos",
+                    sim_dict_train["loss_dict"]["loss_root_pos"],
+                    train_step_idx)
+                self.writer.add_scalar(
+                    "train_loss/loss_root_rot",
+                    sim_dict_train["loss_dict"]["loss_root_rot"],
+                    train_step_idx)
+                self.writer.add_scalar(
+                    "train_loss/loss_poses",
+                    sim_dict_train["loss_dict"]["loss_poses"],
+                    train_step_idx)
                 if self.inertia_estimator_specs["network"] != "CRBA":
-                    inertia_grads = []
-                    weights_grads = {}
-                for sim_step_idx in range(self.temporal_window, self.seq_length):
-                    # get data per step
-                    data_train_per_step: Dict[str, torch.Tensor] = {}
-                    for data_name, data in data_train_per_batch.items():
-                        data_train_per_step[data_name] = data[:, [sim_step_idx]]
-
-                    # set axis vectors
-                    # basis_vec_w = torch.FloatTensor(
-                    #     np.array(
-                    #         [[1, 0, 0, ], [0, 1, 0, ], [0, 0, 1, ]])).to(self.device).view(1, 3, 3)
-                    # basis_vec_w = basis_vec_w.expand(self.batch_size, -1, -1)
-                    
-                    # setup input_rr (for contact label estimation) and floor normals
-                    # for computing forces
-                    # frame_rr_2Ds = p_2ds_rr.clone()[
-                    #     :,
-                    #     sim_step_idx-self.temporal_window:sim_step_idx].view(
-                    #     self.batch_size, self.temporal_window, len(self.target_ids)*2)
-                    # floor_normals = torch.transpose(
-                    #     torch.bmm(
-                    #         self.Rs,
-                    #         torch.transpose(
-                    #             basis_vec_w, 1, 2)), 1, 2)[:, 1].view(self.batch_size, 3)
-                    # input_rr = frame_rr_2Ds.view(
-                    #     self.batch_size, self.temporal_window, -1)
-
-                    # extract target pose
-                    q_tar = data_train_per_step[
-                        PerMotionDataName.QPOS_GT].squeeze(-2).view(self.batch_size, self.dof+1)
-                    trans_tar = q_tar[:, :3].view(self.batch_size, 3)
-                    quat_tar = torch.cat((q_tar[:, -1].view(-1, 1), q_tar[:, 3:6]), 1).view(
-                        self.batch_size, 4)
-                    art_tar = q_tar[:, 6:-1].view(self.batch_size, 40)
-                    
-                    # compute contact labels
-                    # with torch.no_grad(): 
-                    #     pred_labels, _ = self.contact_label_estimation(input_rr)
-
-                    if sim_step_idx == self.temporal_window:
-                        # define q0, qdot0 before the dynamic cycle
-                        q0 = q_tar.view(self.batch_size, self.dof + 1)
-                        # NOTE: since we're not inferring target poses on the fly,
-                        # we can obtain qdot0 from the ground truth. But I found that
-                        # initializing qvel like this leads to larger motion errors.
-                        # So still we initialize qdot0 to 0.
-                        qdot0 = torch.zeros(
-                            self.batch_size, self.dof,
-                            dtype=torch.float32, device=self.device)
-                        # qdot0 = data_train_per_step[
-                        #     PerMotionDataName.QVEL_GT].squeeze(-2).view(self.batch_size, self.dof)
-                        # if sim_step_idx == self.temporal_window:
-                        #     pre_lr_th_cons = torch.zeros(
-                        #         self.batch_size, 4*3,
-                        #         dtype=q0.dtype, device=self.device)
-                    else:
-                        pass
-                        # q0 = q_tar.view(self.batch_size, self.dof + 1)
-                        # qdot0 = data_train_per_step[
-                        #     PerMotionDataName.QVEL_GT].squeeze(-2).view(self.batch_size, self.dof)
-
-                    # estimate inertia / forward prop
-                    # NOTE: here we use our inertia estimator instead of get_mass_mat_cpu().
-                    # Also, we estimate inertia for each dynamic cycle within a frame
-                    if self.inertia_estimator_specs["network"] != "CRBA":
-                        self.optimizer.zero_grad()
-                    self.inertia_estimator.train()
-                    model_input = {
-                        "qpos": q0.clone().unsqueeze(1),
-                        "qvel": qdot0.clone().unsqueeze(1)}
-                    model_output = self.inertia_estimator(model_input)
-                    
-                    # extract M or M_inv
-                    if self.predict_M_inv:
-                        if self.inertia_estimator_specs["network"] == "CRBA":
-                            M = model_output["inertia"]
-                            M_inv = torch.inverse(M)
-                            M_inv = ut.clean_massMat(M_inv)
-                        else:
-                            M_inv = model_output["inertia"]
-                            M = torch.inverse(M_inv)
-                    else:
-                        M = model_output["inertia"]
-                        M_inv = torch.inverse(M)
-                        if self.inertia_estimator_specs["network"] == "CRBA":
-                            M_inv = ut.clean_massMat(M_inv)
-                    
-                    # run the dynamic cycle
-                    tau_per_cycle = []
-                    for cycle_idx in range(self.num_dyn_cycles):
-                        # compute ankle Jacobians
-                        # J = self.cu.get_contact_jacobis6D(
-                        #     self.rbdl_model,
-                        #     q0.clone().cpu().detach().numpy(),
-                        #     [self.rbdl_dic['left_ankle'], self.rbdl_dic['right_ankle']],
-                        #     self.device)
-
-                        # compute errors
-                        quat0 = torch.cat((q0[:, -1].view(-1, 1), q0[:, 3:6]), 1)
-                        errors_trans, errors_ori, errors_art = self.cu.get_PD_errors(
-                            quat_tar, quat0, trans_tar, q0[:, :3], art_tar, q0[:, 6:-1])
-                        current_errors = torch.cat((errors_trans, errors_ori, errors_art), 1)
-
-                        # compute gains and tau
-                        if self.neural_PD:
-                            # NOTE: for DyNet's M_inv input, we use the inverse of rigid inertia
-                            M_rigid = ut.get_mass_mat(
-                                self.rbdl_model,
-                                q0.detach().clone().cpu().numpy(),
-                                device = self.device)
-                            M_inv_rigid = torch.inverse(M_rigid)
-                            M_inv_rigid = ut.clean_massMat(M_inv_rigid)
-                            dynInput = torch.cat(
-                                (q_tar, q0, qdot0, torch.flatten(M_inv_rigid, 1), current_errors,), 1)
-                            neural_gain, neural_offset = self.DyNet(dynInput)
-                            tau = self.cu.get_neural_development(
-                                errors_trans,
-                                errors_ori,
-                                errors_art,
-                                qdot0,
-                                neural_gain,
-                                neural_offset,
-                                self.limit,
-                                art_only = 1,
-                                small_z = 1)
-                        else:
-                            tau = self.cu.get_tau(
-                                errors_trans,
-                                errors_ori,
-                                errors_art,
-                                qdot0,
-                                self.limit,
-                                small_z = 1)
-
-                        # compute gravity and Coriolis force
-                        # gcc = self.get_grav_corioli(
-                        #     [0],
-                        #     floor_normals,
-                        #     q0,
-                        #     qdot0)
-                        # tau_gcc = tau + gcc
-                        
-                        # compute GRF/M
-                        # GRFInput = torch.cat(
-                        #     (tau_gcc[:, :6],
-                        #      torch.flatten(J, 1),
-                        #      floor_normals,
-                        #      pred_labels,
-                        #      pre_lr_th_cons), 1)
-                        # lr_th_cons = self.GRFNet(GRFInput)
-                        # gen_conF = cut.get_contact_wrench(
-                        #     self.rbdl_model,
-                        #     q0,
-                        #     self.rbdl_dic,
-                        #     lr_th_cons,
-                        #     pred_labels)
-
-                        # run Forward Dynamics and compute new q, qdot
-                        # qddot = self.PyFD(tau, M_inv)
-                        qddot = torch.bmm(
-                            M_inv.view(self.batch_size, self.dof, self.dof),
-                            tau.view(self.batch_size, self.dof, 1)).view(self.batch_size, self.dof)
-                        _, q, qdot, _ = self.cu.pose_update_quat(
-                            qdot0,
-                            q0,
-                            quat0,
-                            self.delta_t,
-                            qddot,
-                            self.speed_limit,
-                            th_zero = True,
-                            disable_clamp = True)
-
-                        # update qdot0, q0
-                        qdot0 = qdot.clone()
-                        q0 = self.au.angle_normalize_batch(q)
-
-                        # register tau
-                        tau_per_cycle.append(tau)
-                    
-                    # compute 3D joint positions (?)           
-                    # p_3D_p = self.PyFK( 
-                    #     [self.model_addresses["0"]],
-                    #     self.target_joint_ids,
-                    #     self.num_dyn_cycles * self.delta_t,
-                    #     torch.FloatTensor([0]),
-                    #     q0)
-
-                    # register predictions and other stuff
-                    qpos_pred[:, sim_step_idx-self.temporal_window] = q0
-                    qvel_pred[:, sim_step_idx-self.temporal_window] = qdot0
-
-                    # check per-frame pose error
-                    # per_step_pose_err = torch.mean(
-                    #     torch.linalg.vector_norm(
-                    #     q_tar[:, 6:-1] - q0[:, 6:-1], ord=2, dim=-1),
-                    #     dim=0)
-                    # print(f"per-step pose error: {per_step_pose_err}")
-                    
-                # compute loss and backprop, after an entire sequence ends
-                qpos_gt = data_train_per_batch[PerMotionDataName.QPOS_GT][
-                    :, self.temporal_window:].view(
-                    self.batch_size, self.seq_length-self.temporal_window, self.dof+1)
-                loss_dict = self.loss_cls.loss(
-                    qpos_pred,
-                    qpos_gt)
-                loss = loss_dict["loss"]
-                if self.inertia_estimator_specs["network"] != "CRBA":
-                    # qpos_pred.register_hook(
-                    #     lambda grad: print(f"norm of qpos's grad: {torch.norm(grad)}"))
-                    # q0.register_hook(
-                    #     lambda grad: print(f"norm of qpos0's grad: {torch.norm(grad)}"))
-                    # qdot0.register_hook(
-                    #     lambda grad: print(f"norm of qdot0's grad: {torch.norm(grad)}"))
-                    # qdot.register_hook(
-                    #     lambda grad: print(f"norm of qdot's grad: {torch.norm(grad)}"))
-                    # q.register_hook(
-                    #     lambda grad: print(f"norm of q's grad: {torch.norm(grad)}"))
-                    # qddot.register_hook(
-                    #     lambda grad: print(f"norm of qddot's grad: {torch.norm(grad)}"))
-                    # tau.register_hook(lambda grad: print(f"norm of tau's grad: {torch.norm(grad)}"))
-                    # M.register_hook(
-                    #         lambda grad: print(f"norm of M's grad: {torch.norm(grad)}"))
-                    if self.predict_M_inv:
-                        inertia_hook = M_inv.register_hook(
-                            lambda grad: store_and_prune_grad(
-                                grad, inertia_grads, True, self.grad_thresh))
-                    else:
-                        inertia_hook = M.register_hook(
-                            lambda grad: store_and_prune_grad(
-                                grad, inertia_grads, True, self.grad_thresh))
-                    loss.backward()
-                    inertia_hook.remove()
-                    # clip grads
-                    clip_grad_norm_(self.inertia_estimator.parameters(), self.grad_thresh)
-                    # record grads
-                    named_params = self.inertia_estimator.named_parameters()
-                    for name, params in named_params:
-                        assert params.grad is not None
-                        if params.requires_grad:
-                            weights_grads[name] = params.grad
-                    self.optimizer.step()
-                loss_per_step.append(loss.item())
-
-                # visualize stuff in TB
-                self.writer.add_scalar(
-                    "train_loss/loss_total", loss, train_step_idx)
-                self.writer.add_scalar(
-                    "train_loss/loss_root_pos", loss_dict["loss_root_pos"], train_step_idx)
-                self.writer.add_scalar(
-                    "train_loss/loss_root_rot", loss_dict["loss_root_rot"], train_step_idx)
-                self.writer.add_scalar(
-                    "train_loss/loss_poses", loss_dict["loss_poses"], train_step_idx)
-                if self.inertia_estimator_specs["network"] != "CRBA":
+                    inertia_grads = sim_dict_train["inertia_grads"]
+                    weights_grads = sim_dict_train["weights_grads"]
                     if len(inertia_grads) > 0:
                         if self.predict_M_inv:
                             scalar_name = "train_grads/M_inv_grads_norm"
@@ -614,13 +664,11 @@ class Trainer():
                             scalar_name = "train_grads/M_grads_norm"
                         self.writer.add_scalar(
                             scalar_name,
-                            torch.linalg.norm(inertia_grads[0]).cpu().detach().numpy(),
+                            np.linalg.norm(inertia_grads[0]),
                             train_step_idx)
                     for name, params_grads in weights_grads.items():
-                        grad_max = torch.max(
-                            torch.abs(params_grads)).cpu().detach().numpy()
-                        grad_mean = torch.mean(
-                            torch.abs(params_grads)).cpu().detach().numpy()
+                        grad_max = np.max(np.abs(params_grads))
+                        grad_mean = np.mean(np.abs(params_grads))
                         self.writer.add_scalar(
                             f"train_grads/{name}_grads_max",
                             grad_max,
@@ -629,6 +677,35 @@ class Trainer():
                             f"train_grads/{name}_grads_mean",
                             grad_mean,
                             train_step_idx)
+
+                # validate
+                if (train_step_idx+1) % self.steps_til_val == 0 or train_step_idx == 0:
+                    # load val batch
+                    iterator_val = iter(self.dataloader_val)
+                    try:
+                        data_val = next(iterator_val)
+                    except StopIteration:
+                        iterator_val = iter(self.dataloader_val)
+                        data_val = next(iterator_val)
+                    data_val_per_batch = move_dict_to_device(
+                        data_val, self.device)                
+                    sim_dict_val = self.simulate(data_val_per_batch, "val")
+                    self.writer.add_scalar(
+                        "val_loss/loss_total",
+                        sim_dict_val["loss_dict"]["loss"],
+                        train_step_idx)
+                    self.writer.add_scalar(
+                        "val_loss/loss_root_pos",
+                        sim_dict_val["loss_dict"]["loss_root_pos"],
+                        train_step_idx)
+                    self.writer.add_scalar(
+                        "val_loss/loss_root_rot",
+                        sim_dict_val["loss_dict"]["loss_root_rot"],
+                        train_step_idx)
+                    self.writer.add_scalar(
+                        "val_loss/loss_poses",
+                        sim_dict_val["loss_dict"]["loss_poses"],
+                        train_step_idx)
                 
     def save_model(self):
         if self.inertia_estimator_specs['network'] != "CRBA":

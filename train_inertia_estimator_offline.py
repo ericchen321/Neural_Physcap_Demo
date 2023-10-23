@@ -278,7 +278,7 @@ if __name__ == "__main__":
                 for name, params in named_params:
                     assert params.grad is not None
                     if params.requires_grad:
-                        weights_grads[name] = params.grad
+                        weights_grads[name] = params.grad.cpu().detach().numpy()
                 optimizer.step()
             
             # log training data to tb
@@ -291,13 +291,11 @@ if __name__ == "__main__":
                         scalar_name = "train_grads/M_grads_norm"
                     writer.add_scalar(
                         scalar_name,
-                        torch.linalg.norm(inertia_grads[0]).cpu().detach().numpy(),
+                        np.linalg.norm(inertia_grads[0]),
                         step_idx)
                 for name, param_grads in weights_grads.items():
-                    grad_max = torch.max(
-                        torch.abs(param_grads)).cpu().detach().numpy()
-                    grad_mean = torch.mean(
-                        torch.abs(param_grads)).cpu().detach().numpy()
+                    grad_max = np.max(np.abs(param_grads))
+                    grad_mean = np.mean(np.abs(param_grads))
                     writer.add_scalar(
                         f"train_grads/{name}_grads_max",
                         grad_max,
