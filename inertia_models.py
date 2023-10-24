@@ -114,39 +114,45 @@ def define_inertia_estimator(
             mlp_widths = mlp_widths,
             seq_length = seq_length,
             dof = dof,
-            activation = activation).to(device)
+            activation = activation,
+            device = device)
     elif network == "SymmNetBase":
         model = SymmNetBase(
             mlp_widths = mlp_widths,
             seq_length = seq_length,
             dof = dof,
-            activation = activation).to(device)
+            activation = activation,
+            device = device)
     elif network == "SPDNetBase":
         model = SPDNetBase(
             mlp_widths = mlp_widths,
             seq_length = seq_length,
             dof = dof,
             activation = activation,
-            spd_layer_opts = model_specs["spd_layer"]).to(device)
+            spd_layer_opts = model_specs["spd_layer"],
+            device = device)
     elif network == "UnconNetQVel":
         model = UnconNetQVel(
             mlp_widths = mlp_widths,
             seq_length = seq_length,
             dof = dof,
-            activation = activation).to(device)
+            activation = activation,
+            device = device)
     elif network == "SymmNetQVel":
         model = SymmNetQVel(
             mlp_widths = mlp_widths,
             seq_length = seq_length,
             dof = dof,
-            activation = activation).to(device)
+            activation = activation,
+            device = device)
     elif network == "SPDNetQVel":
         model = SPDNetQVel(
             mlp_widths = mlp_widths,
             seq_length = seq_length,
             dof = dof,
             activation = activation,
-            spd_layer_opts = model_specs["spd_layer"]).to(device)
+            spd_layer_opts = model_specs["spd_layer"],
+            device = device)
     elif network == "CRBA":
         model = CRBA(
             model_specs["urdf_path"])
@@ -161,7 +167,8 @@ class ArchB(nn.Module):
         mlp_widths = [256, 128, 64, 32], 
         seq_length = 50,
         dof = 2,
-        activation = "relu"):
+        activation = "relu",
+        device = "cpu"):
         r"""
         Architecture class "B". Predict joint-space inertia from
         generalized position and the total mass of the pendulum.
@@ -175,6 +182,7 @@ class ArchB(nn.Module):
                 can be "relu" or "lrelu"
         """
         super(ArchB, self).__init__()
+        self.device = device
 
         self.seq_length = seq_length
         self.dof = dof
@@ -192,16 +200,16 @@ class ArchB(nn.Module):
                 # takes qpos at step 0 + total sys mass
                 layer = nn.Sequential(
                     nn.Linear((self.dof + 1), mlp_widths[i]),
-                    activation_layer)
+                    activation_layer).to(self.device)
             elif i == len(mlp_widths):
                 # last hidden layer, no activation
                 layer = nn.Sequential(
-                    nn.Linear(mlp_widths[i-1], self.dof**2))
+                    nn.Linear(mlp_widths[i-1], self.dof**2)).to(self.device)
             else:
                 # intermediate layers
                 layer = nn.Sequential(
                     nn.Linear(mlp_widths[i-1], mlp_widths[i]),
-                    activation_layer)
+                    activation_layer).to(self.device)
             self.mlp_layers.append(layer)
     
     def forward(self, x: Dict[str, torch.Tensor]):
@@ -243,7 +251,8 @@ class ArchD(ArchB):
         mlp_widths = [256, 128, 64, 32], 
         seq_length = 50,
         dof = 2,
-        activation = "relu"):
+        activation = "relu",
+        device = "cpu"):
         r"""
         A variant of arch B: the last layer predicts the min set of
         elements necessary to construct a symmetric matrix.
@@ -252,12 +261,14 @@ class ArchD(ArchB):
             mlp_widths,
             seq_length,
             dof,
-            activation)
+            activation,
+            device)
         
         # compute num of elements needed
         self.num_elems = int(self.dof * (self.dof + 1) / 2)
         # replace last layer
-        self.mlp_layers[-1] = nn.Linear(mlp_widths[-1], self.num_elems)
+        self.mlp_layers[-1] = nn.Linear(
+            mlp_widths[-1], self.num_elems, device=self.device)
 
     def forward(self, x: Dict[str, torch.Tensor]):
         r"""
@@ -301,7 +312,8 @@ class ArchE(ArchD):
         spd_layer_opts: Dict = {
             "type": "cholesky",
             "min_value": 1e-8,
-            "positivity": "Abs"}):
+            "positivity": "Abs"},
+        device = "cpu"):
         r"""
         A variant of arch D: append an SPD layer after the MLP layers
         to guarantee that the output is an SPD matrix, or PSD matrix
@@ -315,7 +327,8 @@ class ArchE(ArchD):
             mlp_widths,
             seq_length,
             dof,
-            activation = activation)
+            activation = activation,
+            device = device)
         
         # extract SPD layer options
         spd_layer_type = spd_layer_opts["type"]
@@ -326,19 +339,22 @@ class ArchE(ArchD):
         self.in_shape = spdlayers.in_shape_from(dof)
         
         # define the output dim of the last MLP layer
-        self.mlp_layers[-1] = nn.Linear(mlp_widths[-1], self.in_shape)
+        self.mlp_layers[-1] = nn.Linear(
+            mlp_widths[-1], self.in_shape).to(self.device)
 
         # define the SPD layer
         if spd_layer_type == "cholesky":
             self.spd_layer = spdlayers.Cholesky(
                 output_shape = dof,
                 min_value = min_value,
-                positive = positivity)
+                positive = positivity,
+                device = device)
         elif spd_layer_type == "eigen":
             self.spd_layer = spdlayers.Eigen(
                 output_shape = dof,
                 min_value = min_value,
-                positive = positivity)
+                positive = positivity,
+                device = device)
         else:
             raise ValueError("Unsupported SPD layer type.")
 
@@ -365,10 +381,7 @@ class ArchE(ArchD):
             inertia_params = layer(inertia_params)
         
         # pass through the SPD layer
-        # NOTE: SPD layer only runs on CPU
-        inertia_params = inertia_params.to("cpu")
         inertia = self.spd_layer(inertia_params)
-        inertia = inertia.to(x["qpos"].device)
         
         # assemble output
         out = {
@@ -382,7 +395,8 @@ class UnconNetBase(ArchB):
         mlp_widths = [256, 128, 64, 32], 
         seq_length = 50,
         dof = 2,
-        activation = "relu"):
+        activation = "relu",
+        device = "cpu"):
         r"""
         A variant of arch B: Take no mass as input.
         """
@@ -390,7 +404,8 @@ class UnconNetBase(ArchB):
             mlp_widths,
             seq_length,
             dof,
-            activation)
+            activation,
+            device)
         if activation == "relu":
             act_layer = nn.ReLU()
         elif activation == "lrelu":
@@ -399,7 +414,7 @@ class UnconNetBase(ArchB):
             raise ValueError("Activation type not supported.")
         self.mlp_layers[0] = nn.Sequential(
             nn.Linear(self.dof+1, mlp_widths[0]),
-            act_layer)
+            act_layer).to(self.device)
 
     def forward(self, x: Dict[str, torch.Tensor]):
         r"""
@@ -433,7 +448,8 @@ class SymmNetBase(ArchD):
         mlp_widths = [256, 128, 64, 32], 
         seq_length = 50,
         dof = 2,
-        activation = "relu"):
+        activation = "relu",
+        device = "cpu"):
         r"""
         A variant of arch D: Take no mass as input.
         """
@@ -441,7 +457,8 @@ class SymmNetBase(ArchD):
             mlp_widths,
             seq_length,
             dof,
-            activation)
+            activation,
+            device)
         if activation == "relu":
             act_layer = nn.ReLU()
         elif activation == "lrelu":
@@ -450,7 +467,7 @@ class SymmNetBase(ArchD):
             raise ValueError("Activation type not supported.")
         self.mlp_layers[0] = nn.Sequential(
             nn.Linear(self.dof+1, mlp_widths[0]),
-            act_layer)
+            act_layer).to(self.device)
 
     def forward(self, x: Dict[str, torch.Tensor]):
         r"""
@@ -490,7 +507,8 @@ class SPDNetBase(ArchE):
         spd_layer_opts: Dict = {
             "type": "cholesky",
             "min_value": 1e-8,
-            "positivity": "Abs"}):
+            "positivity": "Abs"},
+        device = "cpu"):
         r"""
         A variant of arch E: Take no mass as input.
         """
@@ -499,7 +517,8 @@ class SPDNetBase(ArchE):
             seq_length,
             dof,
             activation,
-            spd_layer_opts)
+            spd_layer_opts,
+            device)
         if activation == "relu":
             act_layer = nn.ReLU()
         elif activation == "lrelu":
@@ -508,7 +527,7 @@ class SPDNetBase(ArchE):
             raise ValueError("Activation type not supported.")
         self.mlp_layers[0] = nn.Sequential(
             nn.Linear(self.dof+1, mlp_widths[0]),
-            act_layer)
+            act_layer).to(self.device)
 
     def forward(self, x: Dict[str, torch.Tensor]):
         r"""
@@ -525,15 +544,15 @@ class SPDNetBase(ArchE):
         inertia_params = qpos_init
         
         # pass through MLP
+        # layer_idx = 0
         for layer in self.mlp_layers:
+            # print("layer {}".format(layer_idx))
             inertia_params = layer(inertia_params)
+            # layer_idx += 1
         inertia_params_sqr = inertia_params.view(num_sims, self.in_shape)
         
         # pass through the SPD layer
-        # NOTE: SPD layer only runs on CPU
-        inertia_params = inertia_params.to("cpu")
         inertia = self.spd_layer(inertia_params)
-        inertia = inertia.to(x["qpos"].device)
         
         # assemble output
         inertia_before_spd = construct_symm_matrix(
@@ -550,7 +569,8 @@ class UnconNetQVel(UnconNetBase):
         mlp_widths = [256, 128, 64, 32],
         seq_length = 50,
         dof = 2,
-        activation="relu"):
+        activation="relu",
+        device = "cpu"):
         r"""
         A variant of UnconNetBase: Other than a pose, take joint velocity as inputs.
         """
@@ -558,7 +578,8 @@ class UnconNetQVel(UnconNetBase):
             mlp_widths,
             seq_length,
             dof,
-            activation)
+            activation,
+            device)
         
         if activation == "relu":
             act_layer = nn.ReLU()
@@ -568,7 +589,7 @@ class UnconNetQVel(UnconNetBase):
             raise ValueError("Activation type not supported.")
         self.mlp_layers[0] = nn.Sequential(
             nn.Linear((2*self.dof+1), mlp_widths[0]),
-            act_layer)
+            act_layer).to(self.device)
         
     def forward(self, x: Dict[str, torch.Tensor]):
         r"""
@@ -608,7 +629,8 @@ class SymmNetQVel(SymmNetBase):
         mlp_widths = [256, 128, 64, 32], 
         seq_length = 50,
         dof = 2,
-        activation = "relu"):
+        activation = "relu",
+        device = "cpu"):
         r"""
         A variant of SymmNetBase: Other than a pose, take joint velocity as inputs.
         """
@@ -616,7 +638,8 @@ class SymmNetQVel(SymmNetBase):
             mlp_widths,
             seq_length,
             dof,
-            activation)
+            activation,
+            device)
         
         if activation == "relu":
             act_layer = nn.ReLU()
@@ -626,7 +649,7 @@ class SymmNetQVel(SymmNetBase):
             raise ValueError("Activation type not supported.")
         self.mlp_layers[0] = nn.Sequential(
             nn.Linear((2*self.dof+1), mlp_widths[0]),
-            act_layer)
+            act_layer).to(self.device)
 
     def forward(self, x: Dict[str, torch.Tensor]):
         r"""
@@ -672,7 +695,8 @@ class SPDNetQVel(SPDNetBase):
         spd_layer_opts: Dict = {
             "type": "cholesky",
             "min_value": 1e-8,
-            "positivity": "Abs"}):
+            "positivity": "Abs"},
+        device = "cpu"):
         r"""
         A variant of SPDNetBase: Other than a pose, take 1) joint velocity as inputs.
         """
@@ -681,7 +705,8 @@ class SPDNetQVel(SPDNetBase):
             seq_length,
             dof,
             activation,
-            spd_layer_opts)
+            spd_layer_opts,
+            device)
         
         if activation == "relu":
             act_layer = nn.ReLU()
@@ -691,7 +716,7 @@ class SPDNetQVel(SPDNetBase):
             raise ValueError("Activation type not supported.")
         self.mlp_layers[0] = nn.Sequential(
             nn.Linear((2*self.dof+1), mlp_widths[0]),
-            act_layer)
+            act_layer).to(self.device)
         
     def forward(self, x: Dict[str, torch.Tensor]):
         r"""
@@ -719,10 +744,7 @@ class SPDNetQVel(SPDNetBase):
         inertia_params_sqr = inertia_params.view(num_sims, self.in_shape)
         
         # pass through the SPD layer
-        # NOTE: SPD layer only runs on CPU
-        inertia_params = inertia_params.to("cpu")
         inertia = self.spd_layer(inertia_params)
-        inertia = inertia.to(x["qpos"].device)
         
         # assemble output
         inertia_before_spd = construct_symm_matrix(
