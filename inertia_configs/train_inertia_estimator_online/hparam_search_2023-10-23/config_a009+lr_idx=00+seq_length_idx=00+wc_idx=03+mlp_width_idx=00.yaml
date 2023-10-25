@@ -1,0 +1,72 @@
+config_name: config_a009+lr_idx=00+seq_length_idx=00+wc_idx=03+mlp_width_idx=00
+data_save_specs:
+  data_save_dir: data_logging/
+dynamics:
+  con_thresh: 0.001
+  delta_t: 0.011
+  humanoid_urdf_path: URDF/manual.urdf
+  num_dyn_cycles: 6
+  tau_limit: 80.0
+h5_path: data_logging/demo/sample_dance+t=2023-10-11-12-52-04/data+seq_name=sample_dance.h5
+inertia_estimate:
+  batch_size: 64
+  loss:
+    hparams:
+      pose_loss_norm: 2
+      weight_poses: 1.0
+      weight_root_pos: 10.0
+      weight_root_rot: 10.0
+    name: recon_loss_a
+  models:
+    CRBA:
+      arch: nn
+      network: CRBA
+      urdf_path: URDF/manual.urdf
+    nn+SPDNet+Eig+ReLU:
+      activation: lrelu
+      arch: nn
+      mlp:
+        widths:
+        - 8192
+        - 4096
+        - 2048
+      network: SPDNetBase
+      normalize_inputs: false
+      spd_layer:
+        min_value: 1.0e-10
+        positivity: ReLU
+        type: eigen
+    nn+SymmNet:
+      activation: lrelu
+      mlp:
+        widths:
+        - 8192
+        - 4096
+        - 2048
+      network: SymmNetBase
+      normalize_inputs: false
+  num_train_steps: 200
+  optimizer:
+    name: Adam
+    params:
+      amsgrad: true
+      learning_rate: 0.0005
+  predict_M_inv: true
+  pretrained_weights:
+    experiment_name: config_g02+sample_dance+t=2023-10-19-17-29-01/
+  steps_til_val: 20
+kinematics:
+  2d_joint_pos_path: sample_data/sample_dance.npy
+  cam_params_known: true
+  cam_params_path: sample_data/sample_cam_params.npy
+  floor_known: true
+  floor_position_path: sample_data/sample_floor_position.npy
+  img_height: 720
+  img_width: 1280
+  speed_limit: 15.0
+pretrained_nw_path: trained_models/
+seq_length: 10
+temporal_window: 1
+visual_specs:
+  plot_dir: plots/
+  tb_dir: tb/

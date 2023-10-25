@@ -1,0 +1,77 @@
+# general
+config_name: "config_base"
+h5_path: "data_logging/demo/sample_dance+t=2023-10-11-12-52-04/data+seq_name=sample_dance.h5"
+pretrained_nw_path: "trained_models/"
+seq_length: 10
+temporal_window: 1
+
+# dynamics:
+dynamics:
+  delta_t: 0.011
+  num_dyn_cycles: 6
+  con_thresh: 1.0e-3
+  tau_limit: 80.0
+  humanoid_urdf_path: "URDF/manual.urdf"
+
+# kinematics:
+kinematics:
+  img_width: 1280
+  img_height: 720
+  speed_limit: 15.0
+  2d_joint_pos_path: "sample_data/sample_dance.npy"
+  floor_known: True
+  floor_position_path: "sample_data/sample_floor_position.npy"
+  cam_params_known: True
+  cam_params_path: "sample_data/sample_cam_params.npy"
+
+# inertia estimation
+inertia_estimate:
+  predict_M_inv: True
+  pretrained_weights:
+    experiment_name: "config_g02+sample_dance+t=2023-10-19-17-29-01/"
+  num_train_steps: 200
+  loss:
+    name: "recon_loss_a"
+    hparams:
+      weight_root_pos: 10.0
+      weight_root_rot: 5.0
+      weight_poses: 1.0
+      pose_loss_norm: 2
+  optimizer:
+    name: "Adam"
+    params:
+      learning_rate: 5.0e-5
+      amsgrad: True
+  batch_size: 64
+  steps_til_val: 20
+  models:
+    nn+SPDNet+Eig+ReLU:
+      arch: "nn"
+      network: "SPDNetBase"
+      mlp:
+        widths: [8192, 4096, 2048]
+      spd_layer:
+        type: "eigen"
+        min_value: 1.0e-10
+        positivity: "ReLU"
+      activation: "lrelu"
+      normalize_inputs: False
+    nn+SymmNet:
+      network: "SymmNetBase"
+      mlp:
+        widths: [8192, 4096, 2048]
+      activation: "lrelu"
+      normalize_inputs: False
+    CRBA:
+      arch: "nn"
+      network: "CRBA"
+      urdf_path: "URDF/manual.urdf"
+
+# visualization
+visual_specs:
+  plot_dir: "plots/"
+  tb_dir: "tb/"
+
+# data saving
+data_save_specs:
+  data_save_dir: "data_logging/"
