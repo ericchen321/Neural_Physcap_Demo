@@ -706,6 +706,7 @@ class OnlineTrainer():
                         "val_loss/loss_poses",
                         sim_dict_val["loss_dict"]["loss_poses"],
                         train_step_idx)
+            torch.cuda.empty_cache()
                 
     def save_model(self):
         if self.inertia_estimator_specs['network'] != "CRBA":
