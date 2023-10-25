@@ -12,23 +12,16 @@ from torch.utils.data import random_split
 import argparse  
 from datetime import datetime
 import yaml
-        
- 
-if __name__ == "__main__": 
-    parser = argparse.ArgumentParser(description='arguments for predictions')
-    parser.add_argument('--img_width', type=float, default=1280)
-    parser.add_argument('--img_height', type=float, default=720)
-    parser.add_argument('--config', required=True)
-    parser.add_argument(
-        '--device', type=str, help='device for train/val/test, cpu or cuda', required=True)
-    args = parser.parse_args()
+from typing import Dict
 
-    # extract configs
-    with open(args.config, "r") as stream:
-        try:
-            config = yaml.safe_load(stream)
-        except yaml.YAMLError as exc:
-            print(exc)
+
+def train_inertia_estimator_online(
+    config: Dict,
+    device: str = "cuda",
+    nn_name_suffix: str = "",
+    exp_group: str = "train_inertia_estimator_online",
+    exp_subgroup: str = "") -> None:
+
     delta_t = config["dynamics"]["delta_t"]
     urdf_path = config["dynamics"]["humanoid_urdf_path"]
     net_path = config["pretrained_nw_path"]
@@ -64,27 +57,25 @@ if __name__ == "__main__":
     plot_dir_base = visual_specs["plot_dir"]
     plot_dir_exp = os.path.join(
         plot_dir_base,
-        "train_inertia_estimator_online/",
+        f"{exp_group}/{exp_subgroup}/",
         f"{config_name}+{motion_name}+t={time_curr}/")
     tb_dir_base = visual_specs["tb_dir"]
     tb_dir_exp = os.path.join(
         tb_dir_base,
-        "train_inertia_estimator_online/",
+        f"{exp_group}/{exp_subgroup}/",
         f"{config_name}+{motion_name}+t={time_curr}/")
     data_save_specs = config["data_save_specs"]
     data_save_dir_base = data_save_specs["data_save_dir"]
     data_save_dir_exp = os.path.join(
         data_save_dir_base,
-        "train_inertia_estimator_online/",
+        f"{exp_group}/{exp_subgroup}/",
         f"{config_name}+{motion_name}+t={time_curr}/")
-    dof = 46
     temporal_window = config["temporal_window"]
     p_2ds_path = config["kinematics"]["2d_joint_pos_path"]
     num_dyn_cycles = config["dynamics"]["num_dyn_cycles"]
     con_thresh = config["dynamics"]["con_thresh"]
     tau_limit = config["dynamics"]["tau_limit"]
     speed_limit = config["kinematics"]["speed_limit"]
-    device = args.device
 
     # load data
     # NOTE: temporal_window_ori is the original temporal window at the time
@@ -110,13 +101,19 @@ if __name__ == "__main__":
         # define save paths per model
         tb_dir_per_model = os.path.join(
             tb_dir_exp,
-            model_name)
+            f"{model_name}+{nn_name_suffix}/")
         plot_dir_per_model = os.path.join(
             plot_dir_exp,
-            model_name)
+            f"{model_name}+{nn_name_suffix}/")
         data_save_dir_per_model = os.path.join(
             data_save_dir_exp,
-            model_name)
+            f"{model_name}+{nn_name_suffix}/")
+        
+        # train the specified num of steps only for NNs
+        if model_specs["network"] != "CRBA":
+            num_train_steps_per_model = num_train_steps
+        else:
+            num_train_steps_per_model = 20
 
         # train in the dynamic cycle
         print(f"Training {model_name}...")
@@ -145,8 +142,26 @@ if __name__ == "__main__":
             speed_limit = speed_limit,
             motion_name = motion_name,
             batch_size = batch_size,
-            num_train_steps = num_train_steps,
+            num_train_steps = num_train_steps_per_model,
             steps_til_val = steps_til_val,
             device = device)
         trainer.train_and_validate()
         trainer.save_model()
+        
+ 
+if __name__ == "__main__": 
+    parser = argparse.ArgumentParser(description='arguments for predictions')
+    parser.add_argument('--config', required=True)
+    parser.add_argument(
+        '--device', type=str, help='device for train/val/test, cpu or cuda', required=True)
+    args = parser.parse_args()
+
+    # extract configs
+    with open(args.config, "r") as stream:
+        try:
+            config = yaml.safe_load(stream)
+        except yaml.YAMLError as exc:
+            print(exc)
+    
+    # train, validate
+    train_inertia_estimator_online(config, device=args.device)

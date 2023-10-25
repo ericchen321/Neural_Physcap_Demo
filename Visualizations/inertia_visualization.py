@@ -7,6 +7,18 @@ import matplotlib
 import matplotlib.pyplot as plt
 import seaborn as sns
 import os
+import yaml
+
+
+def write_config_to_file(config: dict, save_dir: str, yaml_name: str):
+    r"""
+    Write config to a yaml file.
+    """
+    # create directory if it doesn't exist
+    os.makedirs(save_dir, exist_ok=True)
+    
+    with open(f"{save_dir}/{yaml_name}", 'w') as outfile:
+        yaml.dump(config, outfile, default_flow_style=False)
 
 
 class NPhysCapDoFSemantics:
